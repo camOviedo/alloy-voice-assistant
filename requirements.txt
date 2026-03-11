@@ -1,10 +1,13 @@
 opencv-python
 langchain
-langchain-openai
-langchain_google_genai
+langchain-core
 langchain-community
 python-dotenv
 pyaudio
 soundfile
 SpeechRecognition
-SpeechRecognition[whisper-local]
+faster-whisper
+ollama
+pyttsx3
+numpy
+ctranslate2
