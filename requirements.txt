@@ -11,3 +11,4 @@ ollama
 pyttsx3
 numpy
 ctranslate2
+mss
