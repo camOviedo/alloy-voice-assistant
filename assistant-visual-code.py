@@ -118,19 +118,43 @@ class Assistant:
         
         # Inicializar TTS local
         self.tts_engine = pyttsx3.init()
-        # Configurar voz en español si está disponible
+        # --- AJUSTES PARA VOZ MÁS NATURAL ---
+        # 1. Reducir la velocidad (rate) para que sea más pausado
+        # El valor por defecto suele ser 200 palabras por minuto.
+        # Probaremos con 140, pero puedes ajustarlo según prefieras.
+        current_rate = self.tts_engine.getProperty('rate')
+        new_rate = 140  # o current_rate - 50
+        self.tts_engine.setProperty('rate', new_rate)
+        print(f"Velocidad de voz ajustada a {new_rate} (anterior: {current_rate})")
+        
+        # 2. Aumentar ligeramente el volumen (opcional)
+        self.tts_engine.setProperty('volume', 0.9)  # rango 0.0-1.0
+        
+        # 3. Seleccionar la mejor voz en español disponible
         voices = self.tts_engine.getProperty('voices')
         spanish_voice = None
+        # Algunas voces comunes en Windows: 'Microsoft Sabina', 'Microsoft Helena'
+        # En Linux pueden llamarse 'mbrola_es1', 'es_ES', etc.
         for voice in voices:
-            if 'spanish' in voice.name.lower() or 'español' in voice.name.lower() or 'es_' in voice.id:
+            voice_name = voice.name.lower()
+            voice_id = voice.id.lower()
+            # Criterios de búsqueda para español
+            if any(x in voice_name for x in ['spanish', 'español', 'es_', 'mb-es']):
                 spanish_voice = voice.id
+                print(f"✓ Voz encontrada: {voice.name}")
                 break
+            # Alternativa: buscar por ID (ej. 'mb-es1' para Mbrola Spanish)
+            if 'mb-es' in voice_id or 'es_' in voice_id:
+                spanish_voice = voice.id
+                print(f"✓ Voz encontrada por ID: {voice.name}")
+                break
+        
         if spanish_voice:
             self.tts_engine.setProperty('voice', spanish_voice)
             print("Voz en español seleccionada.")
         else:
             print("No se encontró voz en español, se usará la predeterminada.")
-        
+            
         # Historial de conversación simple (lista de dicts)
         self.chat_history = []
         
@@ -142,7 +166,7 @@ proporcionada por el usuario para responder a sus preguntas. Tu trabajo es respo
 preguntas.
 
 
-Sé amigable y útil. Muestra algo de personalidad.
+Sé amigable y útil. Muestra algo de personalidad. No utilices emoticonos.
 """
         else:
             self.system_prompt = """
