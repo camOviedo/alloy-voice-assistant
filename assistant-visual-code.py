@@ -642,8 +642,13 @@ Por favor, proporciona:
             if success:
                 change_id = result
                 assistant_reply += f"\n\n⏳ **Cambio propuesto guardado como: `{change_id}`**\n"
-                assistant_reply += f"Di 'aprueba cambio {change_id}' para aplicarlo o 'rechaza cambio {change_id}' para descartarlo."
-                assistant_reply += f"\nTambién puedes decir 'ver diferencias {change_id}' para ver el diff."
+                print("Response:", assistant_reply)
+                self.chat_history.append({"role": "user", "content": prompt})
+                self.chat_history.append({"role": "assistant", "content": assistant_reply})
+                self._tts_local(f"He preparado una modificación. Revisa en pantalla y usa el teclado para decidir.")
+                # Mostrar menú interactivo
+                self._show_pending_change_menu(change_id)
+                return
         
         print("Response:", assistant_reply)
         self.chat_history.append({"role": "user", "content": prompt})
@@ -715,8 +720,13 @@ Si necesitas modificar múltiples archivos, indica el archivo principal primero.
                     if success:
                         change_id = result
                         assistant_reply += f"\n\n⏳ **Cambio propuesto guardado como: `{change_id}`**\n"
-                        assistant_reply += f"Di 'aprueba cambio {change_id}' para aplicarlo o 'rechaza cambio {change_id}' para descartarlo."
-                        assistant_reply += f"\nTambién puedes decir 'ver diferencias {change_id}' para ver el diff."
+                        print("Response:", assistant_reply)
+                        self.chat_history.append({"role": "user", "content": prompt})
+                        self.chat_history.append({"role": "assistant", "content": assistant_reply})
+                        self._tts_local(f"He preparado una modificación. Revisa en pantalla y usa el teclado para decidir.")
+                        # Mostrar menú interactivo
+                        self._show_pending_change_menu(change_id)
+                        return  # Importante: retornar para no duplicar el print de Response
                 else:
                     assistant_reply += "\n\n⚠️ No se detectó código propuesto en la respuesta."
             else:
@@ -728,6 +738,79 @@ Si necesitas modificar múltiples archivos, indica el archivo principal primero.
         self.chat_history.append({"role": "user", "content": prompt})
         self.chat_history.append({"role": "assistant", "content": assistant_reply})
         self._tts_local(f"He analizado tu solicitud. Revisa la propuesta en pantalla.")
+
+    def _show_pending_change_menu(self, change_id):
+        """Muestra menú interactivo para gestionar un cambio propuesto"""
+        print("\n" + "="*60)
+        print("📝 CAMBIO PENDIENTE - SELECCIONA UNA OPCIÓN:")
+        print("="*60)
+        print(f"ID: {change_id}")
+        print("\n  [1] ✅ Aprobar y aplicar cambio")
+        print("  [2] ❌ Rechazar y descartar")
+        print("  [3] 📊 Ver diferencias (diff)")
+        print("  [4] ⏭️  Dejar pendiente (decidir luego)")
+        print("="*60)
+        print("Ingresa número (1-4): ", end="", flush=True)
+        
+        try:
+            # Leer input del usuario con timeout
+            import select
+            import sys
+            
+            # Esperar input por 60 segundos
+            ready, _, _ = select.select([sys.stdin], [], [], 60)
+            
+            if ready:
+                choice = sys.stdin.readline().strip()
+                
+                if choice == "1":
+                    success, result = self.file_manager.approve_change(change_id)
+                    if success:
+                        print(f"\n✅ {result}")
+                        self._tts_local("Cambio aprobado y aplicado correctamente")
+                    else:
+                        print(f"\n❌ Error: {result}")
+                        self._tts_local("Hubo un error al aplicar el cambio")
+                        
+                elif choice == "2":
+                    success, result = self.file_manager.reject_change(change_id)
+                    if success:
+                        print(f"\n🗑️ {result}")
+                        self._tts_local("Cambio rechazado y eliminado")
+                    else:
+                        print(f"\n❌ Error: {result}")
+                        
+                elif choice == "3":
+                    diff = self.file_manager.generate_diff(change_id)
+                    if diff:
+                        print(f"\n📊 DIFERENCIAS:\n{'='*60}")
+                        print(diff[:2000])
+                        if len(diff) > 2000:
+                            print("... (diff truncado)")
+                        print(f"{'='*60}")
+                        # Volver a mostrar menú después de ver diff
+                        self._show_pending_change_menu(change_id)
+                        return
+                    else:
+                        print("\n❌ No se pudo generar el diff")
+                        
+                elif choice == "4":
+                    print(f"\n⏳ Cambio {change_id} dejado pendiente.")
+                    print("Puedes gestionarlo luego diciendo 'cambios pendientes'")
+                    self._tts_local("Cambio guardado para revisar más tarde")
+                    
+                else:
+                    print(f"\n⚠️ Opción '{choice}' no válida. Cambio dejado pendiente.")
+                    self._tts_local("Opción no válida, cambio guardado para revisar luego")
+                    
+            else:
+                print("\n⏱️ Tiempo expirado. Cambio dejado pendiente.")
+                print(f"Di 'aprueba cambio {change_id}' para aplicarlo más tarde.")
+                self._tts_local("Tiempo expirado, cambio guardado para revisar luego")
+                
+        except Exception as e:
+            print(f"\n⚠️ Error en menú: {e}. Cambio dejado pendiente.")
+            print(f"ID para gestionar luego: {change_id}")
 
     def _tts_local(self, text):
         """Texto a voz con pyttsx3 (local)"""
