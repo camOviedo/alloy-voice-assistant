@@ -259,16 +259,16 @@ Be friendly and helpful. Show some personality.
     
 
 
+    @staticmethod
     def _extract_code(text):
         """
         Extrae el primer bloque de código Markdown (encerrado entre ``` ```) de un texto.
-
-        El bloque puede tener un lenguaje opcional después de los backticks iniciales.
-        Ejemplos:
-            ```python
-            print("hola")```
-            """
-
+        """
+        pattern = r"```(?:\w*)\n(.*?)```"
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return None
 # -------------------------------------------------------------------
 # Captura de audio en segundo plano con speech_recognition
 # -------------------------------------------------------------------
