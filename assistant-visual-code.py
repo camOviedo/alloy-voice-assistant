@@ -87,6 +87,20 @@ class ProjectFileManager:
         if error:
             return False, error
         
+        # VALIDACIÓN DE SEGURIDAD: detectar si el código es significativamente más corto
+        original_lines = len(original_content.splitlines())
+        new_lines = len(new_content.splitlines())
+        
+        if new_lines < original_lines * 0.5:
+            # El código nuevo tiene menos del 50% de líneas del original
+            warning = f"⚠️ ADVERTENCIA: El código propuesto ({new_lines} líneas) es mucho más corto que el original ({original_lines} líneas)."
+            print(f"\n{'='*60}")
+            print(warning)
+            print("Esto puede indicar que el LLM devolvió solo un fragmento en lugar del archivo completo.")
+            print("El cambio NO se ha guardado. Intenta nuevamente especificando 'archivo completo'.")
+            print(f"{'='*60}\n")
+            return False, f"Código propuesto incompleto: {new_lines} vs {original_lines} líneas. El cambio fue rechazado automáticamente."
+        
         change_id = f"{relative_path}_{int(time.time())}"
         self.pending_changes[change_id] = {
             "file": relative_path,
@@ -614,10 +628,7 @@ CONTENIDO ACTUAL DEL ARCHIVO:
 SOLICITUD DEL USUARIO:
 {prompt}
 
-Por favor, proporciona:
-1. Una explicación de los cambios propuestos
-2. El código completo modificado en un bloque markdown
-3. Una breve descripción de los cambios para el commit"""
+IMPORTANTE: Devuelve el ARCHIVO COMPLETO modificado, no solo los cambios. El código debe ser el archivo completo listo para reemplazar el original."""
 
         # Llamar al modelo
         messages = [{"role": "system", "content": self.system_prompt}]
@@ -677,8 +688,9 @@ SOLICITUD DEL USUARIO:
 INSTRUCCIONES:
 1. Analiza la solicitud y determina CUÁL archivo(es) deberían modificarse
 2. Responde indicando PRIMERO el nombre del archivo a modificar (ej: "Archivo: app.py")
-3. Luego proporciona el código completo modificado en bloque markdown ```python ... ```
-4. Explica brevemente los cambios realizados
+3. Lee el archivo completo y proporciona el CÓDIGO COMPLETO MODIFICADO en bloque markdown ```python ... ```
+4. IMPORTANTE: El código debe ser el archivo COMPLETO, no solo los cambios
+5. Explica brevemente los cambios realizados
 
 Si necesitas modificar múltiples archivos, indica el archivo principal primero."""
 
