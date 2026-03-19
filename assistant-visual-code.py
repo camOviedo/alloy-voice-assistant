@@ -116,8 +116,8 @@ class ProjectFileManager:
         """Obtiene todos los cambios pendientes"""
         return self.pending_changes
     
-    def approve_change(self, change_id):
-        """Aprueba y aplica un cambio pendiente"""
+    def approve_change(self, change_id, auto_commit=False):
+        """Aprueba y aplica un cambio pendiente (sin commit automático por defecto)"""
         if change_id not in self.pending_changes:
             return False, "Cambio no encontrado"
         
@@ -136,14 +136,20 @@ class ProjectFileManager:
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(change["proposed"])
             
-            # Hacer commit en git
-            result = self._git_commit(change["file"], change.get("description", "Actualización via asistente"))
+            result_msg = f"✅ Cambio aplicado a {change['file']}"
+            
+            # Solo hacer commit si se solicita explícitamente
+            if auto_commit:
+                result = self._git_commit(change["file"], change.get("description", "Actualización via asistente"))
+                result_msg += f" | {result}"
+            else:
+                result_msg += " (SIN COMMIT - cambios en working directory)"
             
             # Eliminar de pendientes
             del self.pending_changes[change_id]
             self._save_pending_changes()
             
-            return True, result
+            return True, result_msg
         except Exception as e:
             return False, f"Error aplicando cambio: {e}"
     
@@ -757,12 +763,13 @@ Si necesitas modificar múltiples archivos, indica el archivo principal primero.
         print("📝 CAMBIO PENDIENTE - SELECCIONA UNA OPCIÓN:")
         print("="*60)
         print(f"ID: {change_id}")
-        print("\n  [1] ✅ Aprobar y aplicar cambio")
-        print("  [2] ❌ Rechazar y descartar")
-        print("  [3] 📊 Ver diferencias (diff)")
-        print("  [4] ⏭️  Dejar pendiente (decidir luego)")
+        print("\n  [1] ✅ Aplicar cambio (sin commit)")
+        print("  [2] ✅ Aplicar cambio y hacer commit")
+        print("  [3] ❌ Rechazar y descartar")
+        print("  [4] 📊 Ver diferencias (diff)")
+        print("  [5] ⏭️  Dejar pendiente (decidir luego)")
         print("="*60)
-        print("Ingresa número (1-4): ", end="", flush=True)
+        print("Ingresa número (1-5): ", end="", flush=True)
         
         try:
             # Leer input del usuario con timeout
@@ -776,15 +783,27 @@ Si necesitas modificar múltiples archivos, indica el archivo principal primero.
                 choice = sys.stdin.readline().strip()
                 
                 if choice == "1":
-                    success, result = self.file_manager.approve_change(change_id)
+                    # Aplicar sin commit
+                    success, result = self.file_manager.approve_change(change_id, auto_commit=False)
                     if success:
                         print(f"\n✅ {result}")
-                        self._tts_local("Cambio aprobado y aplicado correctamente")
+                        print("💡 Usa 'git status' para ver los cambios y luego 'git commit' cuando estés listo.")
+                        self._tts_local("Cambio aplicado sin commit. Tú tienes el control del git.")
                     else:
                         print(f"\n❌ Error: {result}")
                         self._tts_local("Hubo un error al aplicar el cambio")
                         
                 elif choice == "2":
+                    # Aplicar con commit
+                    success, result = self.file_manager.approve_change(change_id, auto_commit=True)
+                    if success:
+                        print(f"\n✅ {result}")
+                        self._tts_local("Cambio aplicado y commiteado correctamente")
+                    else:
+                        print(f"\n❌ Error: {result}")
+                        self._tts_local("Hubo un error al aplicar el cambio")
+                        
+                elif choice == "3":
                     success, result = self.file_manager.reject_change(change_id)
                     if success:
                         print(f"\n🗑️ {result}")
@@ -792,7 +811,7 @@ Si necesitas modificar múltiples archivos, indica el archivo principal primero.
                     else:
                         print(f"\n❌ Error: {result}")
                         
-                elif choice == "3":
+                elif choice == "4":
                     diff = self.file_manager.generate_diff(change_id)
                     if diff:
                         print(f"\n📊 DIFERENCIAS:\n{'='*60}")
@@ -806,7 +825,7 @@ Si necesitas modificar múltiples archivos, indica el archivo principal primero.
                     else:
                         print("\n❌ No se pudo generar el diff")
                         
-                elif choice == "4":
+                elif choice == "5":
                     print(f"\n⏳ Cambio {change_id} dejado pendiente.")
                     print("Puedes gestionarlo luego diciendo 'cambios pendientes'")
                     self._tts_local("Cambio guardado para revisar más tarde")
