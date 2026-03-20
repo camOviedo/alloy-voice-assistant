@@ -634,7 +634,14 @@ CONTENIDO ACTUAL DEL ARCHIVO:
 SOLICITUD DEL USUARIO:
 {prompt}
 
-IMPORTANTE: Devuelve el ARCHIVO COMPLETO modificado, no solo los cambios. El código debe ser el archivo completo listo para reemplazar el original."""
+INSTRUCCIONES OBLIGATORIAS:
+1. Devuelve el ARCHIVO COMPLETO modificado, no solo los cambios
+2. REGLA CRÍTICA: El código debe ser el archivo COMPLETO con TODAS sus líneas
+3. REGLA CRÍTICA: Si el archivo original tiene {len(content.splitlines())} líneas, tu respuesta debe tener ~{len(content.splitlines())} líneas
+4. El código debe estar en un solo bloque markdown ```python ... ```
+5. Explica brevemente los cambios DESPUÉS del bloque de código
+
+ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáticamente."""
 
         # Llamar al modelo
         messages = [{"role": "system", "content": self.system_prompt}]
@@ -691,14 +698,16 @@ ARCHIVOS DISPONIBLES EN EL PROYECTO:
 SOLICITUD DEL USUARIO:
 {prompt}
 
-INSTRUCCIONES:
-1. Analiza la solicitud y determina CUÁL archivo(es) deberían modificarse
+INSTRUCCIONES OBLIGATORIAS:
+1. Analiza la solicitud y determina CUÁL archivo debería modificarse
 2. Responde indicando PRIMERO el nombre del archivo a modificar (ej: "Archivo: app.py")
-3. Lee el archivo completo y proporciona el CÓDIGO COMPLETO MODIFICADO en bloque markdown ```python ... ```
-4. IMPORTANTE: El código debe ser el archivo COMPLETO, no solo los cambios
-5. Explica brevemente los cambios realizados
+3. Lee TODO el archivo completo y proporciona el CÓDIGO COMPLETO MODIFICADO
+4. REGLA CRÍTICA: El código debe ser el archivo COMPLETO con TODAS sus líneas, no solo los cambios
+5. REGLA CRÍTICA: Si el archivo original tiene 300 líneas, tu respuesta debe tener ~300 líneas
+6. El código debe estar en un solo bloque markdown ```python ... ```
+7. Explica brevemente los cambios realizados DESPUÉS del bloque de código
 
-Si necesitas modificar múltiples archivos, indica el archivo principal primero."""
+ADVERTENCIA: Si devuelves solo un fragmento del código, el cambio será RECHAZADO automáticamente."""
 
         # Llamar al modelo
         messages = [{"role": "system", "content": self.system_prompt}]
