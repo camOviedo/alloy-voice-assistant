@@ -353,10 +353,22 @@ class Assistant:
 
 Tu tarea es ayudar a mejorar un sistema de reconocimiento de caballos ubicado en: {self.project_path}
 
+REGLA ABSOLUTA #1 - ARCHIVOS COMPLETOS OBLIGATORIOS:
+CUANDO MODIFIQUES CÓDIGO, SIEMPRE DEVUELVES EL ARCHIVO COMPLETO. NUNCA SOLO FRAGMENTOS.
+- Si el archivo tiene 500 líneas, tu respuesta debe tener ~500 líneas de código.
+- NO uses "..." o "resto del código sin cambios".
+- NO uses comentarios tipo "# código anterior...".
+- SIEMPRE incluye TODAS las líneas desde la primera hasta la última.
+
+REGLA ABSOLUTA #2 - ESTRUCTURA DE RESPUESTA:
+1. Explica brevemente qué cambiarás
+2. Proporciona el CÓDIGO COMPLETO en bloque markdown ```python ... ```
+3. Confirma el número de líneas del archivo
+
 CAPACIDADES DISPONIBLES:
 1. Ver la pantalla y analizar videos de carreras de caballos
 2. Leer archivos del proyecto: Puedes leer cualquier archivo .py del proyecto
-3. Proponer cambios: Puedes sugerir modificaciones al código
+3. Proponer cambios: Puedes sugerir modificaciones al código (SIEMPRE archivos completos)
 4. El usuario debe aprobar los cambios antes de aplicarlos
 
 ARCHIVOS PRINCIPALES DEL PROYECTO:
@@ -365,9 +377,9 @@ ARCHIVOS PRINCIPALES DEL PROYECTO:
 - yolo_utils.py: Utilidades para YOLO
 - ui.py: Interfaz de usuario
 
-INSTRUCCIONES:
+INSTRUCCIONES ADICIONALES:
 - Cuando el usuario pida ver/modificar un archivo, usa las funciones disponibles
-- Siempre explica los cambios propuestos antes de mostrar el código
+- SIEMPRE devuelve código completo, nunca fragmentos
 - Incluye el código completo en bloques markdown ```python ... ```
 - Si el usuario dice "aprueba cambio X" o "rechaza cambio X", usa las funciones correspondientes
 - Para ver archivos: el usuario puede decir "muéstrame el archivo tracker.py"
@@ -473,11 +485,15 @@ INSTRUCTIONS:
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
             assistant_reply = response['message']['content'].strip()
-            # Mostrar información de tokens
+            # Mostrar información detallada de tokens
             prompt_tokens = response.get('prompt_eval_count', 'N/A')
             output_tokens = response.get('eval_count', 'N/A')
-            total_tokens = response.get('total_duration', 'N/A')
-            print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens}")
+            total_duration = response.get('total_duration', 'N/A')
+            # Estimar tokens de imagen (base64 ~4/3 del tamaño original, ~0.75 tokens por caracter)
+            image_chars = len(image_base64) if image_base64 else 0
+            est_image_tokens = int(image_chars * 0.75) if image_chars else 0
+            print(f"📊 Tokens - Prompt texto: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
+            print(f"📊 Contexto usado: {prompt_tokens + est_image_tokens if prompt_tokens != 'N/A' else 'N/A'} / 262144 disponibles")
         except Exception as e:
             assistant_reply = f"Error en ollama: {e}"
         
@@ -631,7 +647,7 @@ INSTRUCTIONS:
         # Construir mensaje para el modelo con contexto
         context_prompt = f"""El usuario quiere modificar el archivo `{filename}`.
 
-CONTENIDO ACTUAL DEL ARCHIVO:
+CONTENIDO ACTUAL DEL ARCHIVO ({len(content.splitlines())} líneas total):
 ```python
 {content}
 ```
@@ -639,14 +655,21 @@ CONTENIDO ACTUAL DEL ARCHIVO:
 SOLICITUD DEL USUARIO:
 {prompt}
 
-INSTRUCCIONES OBLIGATORIAS:
-1. Devuelve el ARCHIVO COMPLETO modificado, no solo los cambios
-2. REGLA CRÍTICA: El código debe ser el archivo COMPLETO con TODAS sus líneas
-3. REGLA CRÍTICA: Si el archivo original tiene {len(content.splitlines())} líneas, tu respuesta debe tener ~{len(content.splitlines())} líneas
-4. El código debe estar en un solo bloque markdown ```python ... ```
-5. Explica brevemente los cambios DESPUÉS del bloque de código
+⚠️⚠️⚠️ REGLAS ABSOLUTAS - OBLIGATORIAS:
+1. DEVUELVE EL ARCHIVO COMPLETO. NO solo los cambios. NO fragmentos.
+2. El archivo tiene {len(content.splitlines())} líneas - tu respuesta debe tener EXACTAMENTE ~{len(content.splitlines())} líneas de código.
+3. INCLUYE TODO: imports, clases, funciones, métodos, todo el código.
+4. NO uses "..." o "# resto del código" o "# código anterior sin cambios".
+5. NO hagas resúmenes del código que falta.
+6. Devuelve el código en UN SOLO bloque markdown ```python ... ```
+7. Explica DESPUÉS del código, no antes.
 
-ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáticamente."""
+FORMATO CORRECTO:
+```python
+[TODO el código del archivo, línea por línea]
+```
+
+Si devuelves solo un fragmento, el sistema RECHAZARÁ automáticamente tu respuesta."""
 
         # Llamar al modelo
         messages = [{"role": "system", "content": self.system_prompt}]
@@ -655,10 +678,15 @@ ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáti
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
             assistant_reply = response['message']['content'].strip()
-            # Mostrar información de tokens
+            # Mostrar información detallada de tokens
             prompt_tokens = response.get('prompt_eval_count', 'N/A')
             output_tokens = response.get('eval_count', 'N/A')
-            print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens}")
+            # Estimar tokens de imagen
+            image_chars = len(image_base64) if image_base64 else 0
+            est_image_tokens = int(image_chars * 0.75) if image_chars else 0
+            total_context = (prompt_tokens + est_image_tokens) if prompt_tokens != 'N/A' else est_image_tokens
+            print(f"📊 Tokens - Prompt texto: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
+            print(f"📊 Contexto usado: ~{total_context:,} / 262144 disponibles ({100*total_context/262144:.1f}%)")
         except Exception as e:
             assistant_reply = f"Error generando respuesta: {e}"
         
@@ -707,16 +735,16 @@ ARCHIVOS DISPONIBLES EN EL PROYECTO:
 SOLICITUD DEL USUARIO:
 {prompt}
 
-INSTRUCCIONES OBLIGATORIAS:
+⚠️⚠️⚠️ REGLAS ABSOLUTAS - OBLIGATORIAS:
 1. Analiza la solicitud y determina CUÁL archivo debería modificarse
 2. Responde indicando PRIMERO el nombre del archivo a modificar (ej: "Archivo: app.py")
-3. Lee TODO el archivo completo y proporciona el CÓDIGO COMPLETO MODIFICADO
-4. REGLA CRÍTICA: El código debe ser el archivo COMPLETO con TODAS sus líneas, no solo los cambios
-5. REGLA CRÍTICA: Si el archivo original tiene 300 líneas, tu respuesta debe tener ~300 líneas
-6. El código debe estar en un solo bloque markdown ```python ... ```
-7. Explica brevemente los cambios realizados DESPUÉS del bloque de código
+3. LEE TODO el archivo y proporciona el CÓDIGO COMPLETO MODIFICADO
+4. DEVUELVE EL ARCHIVO COMPLETO, NO solo los cambios, NO fragmentos
+5. El código debe estar en UN SOLO bloque markdown ```python ... ```
+6. Explica brevemente los cambios DESPUÉS del bloque de código
+7. NO uses "..." o "# resto del código" - incluye TODO el código
 
-ADVERTENCIA: Si devuelves solo un fragmento del código, el cambio será RECHAZADO automáticamente."""
+ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáticamente."""
 
         # Llamar al modelo
         messages = [{"role": "system", "content": self.system_prompt}]
