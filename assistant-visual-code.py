@@ -411,14 +411,24 @@ INSTRUCTIONS:
 - To modify: user can say "modify tracker.py to..."
 """
 
-    def answer(self, prompt, image_base64):
+    def answer(self, prompt, image_base64=None):
         if not prompt or not prompt.strip():
             print("Prompt vacío, ignorando.")
             return
         
-        if image_base64 is None:
-            print("Error: imagen no disponible.")
+        # Detectar si el prompt necesita análisis de imagen/visión
+        needs_vision = self._needs_vision_analysis(prompt)
+        
+        if needs_vision and image_base64 is None:
+            print("⚠️ El prompt requiere visión pero no hay imagen disponible.")
             return
+        
+        # Si no necesita visión, no enviar imagen para ahorrar tokens
+        if not needs_vision:
+            image_base64 = None
+            print("📝 Modo texto (sin imagen) - ahorrando tokens")
+        else:
+            print("👁️ Modo visión activado - analizando imagen")
 
         print("Prompt:", prompt)
         prompt_lower = prompt.lower()
@@ -471,6 +481,29 @@ INSTRUCTIONS:
         # Si no coincide con ningún comando específico, usar respuesta normal del asistente
         self._normal_response(prompt, image_base64)
 
+    def _needs_vision_analysis(self, prompt):
+        """Detecta si el prompt requiere análisis de imagen/visión"""
+        prompt_lower = prompt.lower()
+        
+        # Palabras clave que indican necesidad de visión
+        vision_keywords = [
+            # Español
+            "pantalla", "imagen", "foto", "captura", "ventana", "interfaz",
+            "video", "stream", "cámara", "webcam", "monitor", "escritorio",
+            "muestra", "muéstrame", "ver pantalla", "que ves", "qué ves",
+            "analiza la imagen", "describe la imagen", "en la pantalla",
+            "error en pantalla", "lo que ves", "screenshot", "screen",
+            # Inglés
+            "screen", "image", "picture", "window", "interface", "desktop",
+            "what do you see", "analyze image", "show me", "look at"
+        ]
+        
+        for keyword in vision_keywords:
+            if keyword in prompt_lower:
+                return True
+        
+        return False
+
     # Respuesta normal del asistente
     def _normal_response(self, prompt, image_base64):
         """Respuesta normal del asistente"""
@@ -480,7 +513,11 @@ INSTRUCTIONS:
         for msg in self.chat_history[-4:]:
             messages.append(msg)
         
-        messages.append({"role": "user", "content": prompt, "images": [image_base64]})
+        # Solo incluir imagen si está disponible
+        if image_base64:
+            messages.append({"role": "user", "content": prompt, "images": [image_base64]})
+        else:
+            messages.append({"role": "user", "content": prompt})
         
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
@@ -489,11 +526,14 @@ INSTRUCTIONS:
             prompt_tokens = response.get('prompt_eval_count', 'N/A')
             output_tokens = response.get('eval_count', 'N/A')
             total_duration = response.get('total_duration', 'N/A')
-            # Estimar tokens de imagen (base64 ~4/3 del tamaño original, ~0.75 tokens por caracter)
-            image_chars = len(image_base64) if image_base64 else 0
-            est_image_tokens = int(image_chars * 0.75) if image_chars else 0
-            print(f"📊 Tokens - Prompt texto: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
-            print(f"📊 Contexto usado: {prompt_tokens + est_image_tokens if prompt_tokens != 'N/A' else 'N/A'} / 262144 disponibles")
+            # Estimar tokens de imagen si está presente
+            if image_base64:
+                image_chars = len(image_base64)
+                est_image_tokens = int(image_chars * 0.75)
+                print(f"📊 Tokens - Prompt texto: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
+                print(f"📊 Contexto usado: {prompt_tokens + est_image_tokens if prompt_tokens != 'N/A' else est_image_tokens:,} / 262144 disponibles")
+            else:
+                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (sin imagen - ahorrando ~45k tokens)")
         except Exception as e:
             assistant_reply = f"Error en ollama: {e}"
         
@@ -673,7 +713,12 @@ Si devuelves solo un fragmento, el sistema RECHAZARÁ automáticamente tu respue
 
         # Llamar al modelo
         messages = [{"role": "system", "content": self.system_prompt}]
-        messages.append({"role": "user", "content": context_prompt, "images": [image_base64]})
+        
+        # Solo incluir imagen si está disponible (para no gastar tokens innecesariamente)
+        if image_base64:
+            messages.append({"role": "user", "content": context_prompt, "images": [image_base64]})
+        else:
+            messages.append({"role": "user", "content": context_prompt})
         
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
@@ -681,12 +726,15 @@ Si devuelves solo un fragmento, el sistema RECHAZARÁ automáticamente tu respue
             # Mostrar información detallada de tokens
             prompt_tokens = response.get('prompt_eval_count', 'N/A')
             output_tokens = response.get('eval_count', 'N/A')
-            # Estimar tokens de imagen
-            image_chars = len(image_base64) if image_base64 else 0
-            est_image_tokens = int(image_chars * 0.75) if image_chars else 0
-            total_context = (prompt_tokens + est_image_tokens) if prompt_tokens != 'N/A' else est_image_tokens
-            print(f"📊 Tokens - Prompt texto: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
-            print(f"📊 Contexto usado: ~{total_context:,} / 262144 disponibles ({100*total_context/262144:.1f}%)")
+            # Estimar tokens de imagen si está presente
+            if image_base64:
+                image_chars = len(image_base64)
+                est_image_tokens = int(image_chars * 0.75)
+                total_context = (prompt_tokens + est_image_tokens) if prompt_tokens != 'N/A' else est_image_tokens
+                print(f"📊 Tokens - Prompt texto: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
+                print(f"📊 Contexto usado: ~{total_context:,} / 262144 disponibles ({100*total_context/262144:.1f}%)")
+            else:
+                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (sin imagen - ahorrando tokens)")
         except Exception as e:
             assistant_reply = f"Error generando respuesta: {e}"
         
@@ -748,7 +796,12 @@ ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáti
 
         # Llamar al modelo
         messages = [{"role": "system", "content": self.system_prompt}]
-        messages.append({"role": "user", "content": smart_prompt, "images": [image_base64]})
+        
+        # Solo incluir imagen si está disponible
+        if image_base64:
+            messages.append({"role": "user", "content": smart_prompt, "images": [image_base64]})
+        else:
+            messages.append({"role": "user", "content": smart_prompt})
         
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
@@ -756,7 +809,10 @@ ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáti
             # Mostrar información de tokens
             prompt_tokens = response.get('prompt_eval_count', 'N/A')
             output_tokens = response.get('eval_count', 'N/A')
-            print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens}")
+            if image_base64:
+                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (con imagen)")
+            else:
+                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (sin imagen)")
         except Exception as e:
             assistant_reply = f"Error generando respuesta: {e}"
             print("Response:", assistant_reply)
