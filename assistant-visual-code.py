@@ -1017,15 +1017,20 @@ if __name__ == "__main__":
     
     print("\n✅ Asistente listo. Elige cómo quieres interactuar.")
     
+    # Flag para controlar si el menú ya fue mostrado
+    menu_shown = False
+    
     # Bucle principal: mostrar pantalla y gestionar entrada
     try:
         while True:
             frame_display = screen_stream.read_display()
             cv2.imshow("Screen Capture", frame_display)
             
-            # Mostrar menú cada vez (si no está escuchando por voz)
+            # Mostrar menú solo una vez (si no está escuchando por voz)
             if not is_listening:
-                show_input_menu()
+                if not menu_shown:
+                    show_input_menu()
+                    menu_shown = True
                 
                 # Esperar input con timeout para mantener la ventana responsive
                 import select
@@ -1034,6 +1039,7 @@ if __name__ == "__main__":
                 ready, _, _ = select.select([sys.stdin], [], [], 0.1)
                 if ready:
                     choice = sys.stdin.readline().strip()
+                    menu_shown = False  # Resetear para mostrar menú nuevamente
                     
                     if choice.lower() == 'q':
                         break
