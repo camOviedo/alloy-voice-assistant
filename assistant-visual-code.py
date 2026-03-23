@@ -956,12 +956,10 @@ if __name__ == "__main__":
 
     # Configurar reconocimiento de voz
     recognizer = sr.Recognizer()
-    recognizer.energy_threshold = 300  # ajuste fino (puede necesitar calibración)
+    recognizer.energy_threshold = 300
     recognizer.dynamic_energy_threshold = True
-    
-    # AUMENTAR TIEMPO DE ESPERA: permite pausas más largas al hablar
-    recognizer.pause_threshold = 4.0  # segundos de silencio antes de procesar (default: 0.8)
-    recognizer.phrase_threshold = 0.3  # segundos mínimos de sonido para considerar inicio de frase
+    recognizer.pause_threshold = 4.0
+    recognizer.phrase_threshold = 0.3
     
     # Obtener micrófono
     microphone = sr.Microphone()
@@ -969,24 +967,113 @@ if __name__ == "__main__":
         print("Calibrando micrófono para ruido ambiente...")
         recognizer.adjust_for_ambient_noise(source, duration=2)
         print("Micrófono calibrado.")
-
-    # Escuchar en segundo plano
-    print("Escuchando en segundo plano. Presiona 'q' en la ventana para salir.")
-    stop_listening = recognizer.listen_in_background(microphone, audio_callback)
-
-    # Bucle principal: mostrar la pantalla capturada
+    
+    # Variable para controlar si estamos escuchando
+    is_listening = False
+    stop_listening = None
+    
+    def toggle_voice_listening(enable):
+        """Activa o desactiva la escucha de voz en segundo plano"""
+        global is_listening, stop_listening
+        if enable and not is_listening:
+            print("🎤 Escucha por voz ACTIVADA")
+            stop_listening = recognizer.listen_in_background(microphone, audio_callback)
+            is_listening = True
+        elif not enable and is_listening:
+            print("🛑 Escucha por voz DESACTIVADA")
+            if stop_listening:
+                stop_listening(wait_for_stop=False)
+            is_listening = False
+    
+    def show_input_menu():
+        """Muestra menú para elegir método de entrada"""
+        print("\n" + "="*50)
+        print("🎯 SELECCIONA MÉTODO DE ENTRADA:")
+        print("="*50)
+        print("  [1] ⌨️  Escribir prompt (teclado)")
+        print("  [2] 🎤 Hablar prompt (voz)")
+        print("  [q] 🚪 Salir")
+        print("="*50)
+        print("Ingresa opción (1/2/q): ", end="", flush=True)
+    
+    def process_text_input():
+        """Procesa entrada por teclado"""
+        try:
+            prompt = input().strip()
+            if prompt.lower() in ['q', 'salir', 'exit']:
+                return False
+            if prompt:
+                image_b64 = screen_stream.read(encode=True)
+                if image_b64:
+                    assistant.answer(prompt, image_b64)
+                else:
+                    print("⚠️ Imagen no disponible, esperando...")
+            return True
+        except EOFError:
+            return False
+        except Exception as e:
+            print(f"❌ Error procesando entrada: {e}")
+            return True
+    
+    print("\n✅ Asistente listo. Elige cómo quieres interactuar.")
+    
+    # Bucle principal: mostrar pantalla y gestionar entrada
     try:
         while True:
             frame_display = screen_stream.read_display()
             cv2.imshow("Screen Capture", frame_display)
+            
+            # Mostrar menú cada vez (si no está escuchando por voz)
+            if not is_listening:
+                show_input_menu()
+                
+                # Esperar input con timeout para mantener la ventana responsive
+                import select
+                import sys
+                
+                ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if ready:
+                    choice = sys.stdin.readline().strip()
+                    
+                    if choice.lower() == 'q':
+                        break
+                    elif choice == '1':
+                        # Entrada por teclado
+                        toggle_voice_listening(False)
+                        print("\n✏️ Escribe tu prompt y presiona ENTER:")
+                        print("> ", end="", flush=True)
+                        if not process_text_input():
+                            break
+                    elif choice == '2':
+                        # Entrada por voz
+                        print("\n🎤 Habla ahora... (la escucha está activa)")
+                        print("   Presiona Ctrl+C o espera para volver al menú")
+                        toggle_voice_listening(True)
+                        try:
+                            # Esperar mientras escucha
+                            time.sleep(2)
+                        except KeyboardInterrupt:
+                            toggle_voice_listening(False)
+                    else:
+                        print(f"\n⚠️ Opción '{choice}' no válida")
+            else:
+                # Está escuchando por voz, solo actualizar ventana
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == 27:
+                    toggle_voice_listening(False)
+                    break
+                time.sleep(0.1)
+                
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q') or key == 27:  # 'q' o ESC
+            if key == ord('q') or key == 27:
                 break
+                
     except KeyboardInterrupt:
-        print("\nInterrupción por teclado.")
+        print("\n\nInterrupción por teclado.")
     finally:
-        print("Deteniendo...")
+        print("\nDeteniendo...")
+        if is_listening and stop_listening:
+            stop_listening(wait_for_stop=False)
         screen_stream.stop()
         cv2.destroyAllWindows()
-        stop_listening(wait_for_stop=False)
         print("Programa terminado.")
