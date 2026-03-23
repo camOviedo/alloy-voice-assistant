@@ -473,6 +473,11 @@ INSTRUCTIONS:
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
             assistant_reply = response['message']['content'].strip()
+            # Mostrar información de tokens
+            prompt_tokens = response.get('prompt_eval_count', 'N/A')
+            output_tokens = response.get('eval_count', 'N/A')
+            total_tokens = response.get('total_duration', 'N/A')
+            print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens}")
         except Exception as e:
             assistant_reply = f"Error en ollama: {e}"
         
@@ -650,6 +655,10 @@ ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáti
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
             assistant_reply = response['message']['content'].strip()
+            # Mostrar información de tokens
+            prompt_tokens = response.get('prompt_eval_count', 'N/A')
+            output_tokens = response.get('eval_count', 'N/A')
+            print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens}")
         except Exception as e:
             assistant_reply = f"Error generando respuesta: {e}"
         
@@ -716,6 +725,10 @@ ADVERTENCIA: Si devuelves solo un fragmento del código, el cambio será RECHAZA
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
             assistant_reply = response['message']['content'].strip()
+            # Mostrar información de tokens
+            prompt_tokens = response.get('prompt_eval_count', 'N/A')
+            output_tokens = response.get('eval_count', 'N/A')
+            print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens}")
         except Exception as e:
             assistant_reply = f"Error generando respuesta: {e}"
             print("Response:", assistant_reply)
