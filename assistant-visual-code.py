@@ -205,13 +205,17 @@ class ProjectFileManager:
         )
         return "".join(diff)
 class ScreenStream:
-    def __init__(self, monitor=1, scale_display=0.5):
+    def __init__(self, monitor=1, scale_display=0.5, max_width=800, jpeg_quality=50):
         """
         monitor: índice del monitor a capturar (1 = principal, 2 = secundario, etc.)
         scale_display: factor de escala para la ventana de previsualización
+        max_width: ancho máximo en píxeles para la imagen enviada al LLM (reduce tokens)
+        jpeg_quality: calidad JPEG (menor = menos tokens pero más compresión)
         """
         self.monitor_index = monitor
         self.scale_display = scale_display
+        self.max_width = max_width
+        self.jpeg_quality = jpeg_quality
         self.frame = None
         self.running = False
         self.lock = Lock()
@@ -254,10 +258,21 @@ class ScreenStream:
                 return None
             frame = self.frame.copy()
         if encode:
-            # Comprimir a JPEG con calidad 70 para menor tamaño
-            encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), 70]
+            # Redimensionar si es necesario para reducir tokens
+            h, w = frame.shape[:2]
+            if w > self.max_width:
+                scale = self.max_width / w
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                print(f"📸 Imagen redimensionada: {w}x{h} → {new_w}x{new_h}")
+            # Comprimir a JPEG con calidad reducida para menor tamaño
+            encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
             _, buffer = cv2.imencode(".jpeg", frame, encode_params)
-            return base64.b64encode(buffer).decode('utf-8')
+            b64 = base64.b64encode(buffer).decode('utf-8')
+            est_tokens = int(len(b64) * 0.75)
+            print(f"📸 Imagen: {len(b64):,} chars (~{est_tokens:,} tokens) | Calidad: {self.jpeg_quality}%")
+            return b64
         return frame
 
     def read_display(self):
@@ -1059,7 +1074,8 @@ if __name__ == "__main__":
     with mss.mss() as sct:
         print("Monitores detectados:", sct.monitors)
     # Elegir monitor: 1 para el principal, 2 para el segundo, etc.
-    screen_stream = ScreenStream(monitor=1, scale_display=0.5).start()
+    # max_width=896 para mantener imágenes ~30-40k tokens (vs 258k)
+    screen_stream = ScreenStream(monitor=1, scale_display=0.5, max_width=896, jpeg_quality=45).start()
     print("Captura de pantalla iniciada.")
 
     # Crear asistente con idioma español y timeout de visión de 10 segundos
