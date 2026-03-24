@@ -283,7 +283,7 @@ class ScreenStream:
 # Asistente con modelo local (Ollama + Whisper GPU + TTS local)
 # -------------------------------------------------------------------
 class Assistant:
-    def __init__(self, model_name="qwen3-vl:8b-long", language="es", project_path=None, vision_timeout=10):
+    def __init__(self, model_name="qwen3-vl:8b-extreme", language="es", project_path=None, vision_timeout=5):
         """
         model_name: modelo en Ollama (ej: "qwen2.5-vl:7b")
         language: idioma para Whisper y para el prompt del sistema (es, en, etc.)
@@ -1063,7 +1063,7 @@ if __name__ == "__main__":
     print("Captura de pantalla iniciada.")
 
     # Crear asistente con idioma español y timeout de visión de 10 segundos
-    assistant = Assistant(model_name="qwen3-vl:8b-long", language="es", project_path=PROJECT_PATH, vision_timeout=10)
+    assistant = Assistant(model_name="qwen3-vl:8b-extreme", language="es", project_path=PROJECT_PATH, vision_timeout=5)
     
     # Mostrar información inicial
     print("\n" + "="*60)
