@@ -283,14 +283,17 @@ class ScreenStream:
 # Asistente con modelo local (Ollama + Whisper GPU + TTS local)
 # -------------------------------------------------------------------
 class Assistant:
-    def __init__(self, model_name="qwen3-vl:8b-long", language="es", project_path=None):
+    def __init__(self, model_name="qwen3-vl:8b-long", language="es", project_path=None, vision_timeout=10):
         """
         model_name: modelo en Ollama (ej: "qwen2.5-vl:7b")
         language: idioma para Whisper y para el prompt del sistema (es, en, etc.)
         project_path: ruta al proyecto a modificar
+        vision_timeout: segundos que dura el modo visión activado (default: 30s)
         """
         self.model_name = model_name
         self.language = language
+        self.vision_timeout = vision_timeout
+        self.vision_active_until = 0  # Timestamp cuando expira el modo visión
         
         # Inicializar gestor de archivos del proyecto
         self.project_path = project_path or PROJECT_PATH
@@ -416,19 +419,33 @@ INSTRUCTIONS:
             print("Prompt vacío, ignorando.")
             return
         
+        # Verificar si el modo visión ha expirado
+        current_time = time.time()
+        vision_expired = current_time > self.vision_active_until
+        
         # Detectar si el prompt necesita análisis de imagen/visión
         needs_vision = self._needs_vision_analysis(prompt)
         
-        if needs_vision and image_base64 is None:
-            print("⚠️ El prompt requiere visión pero no hay imagen disponible.")
-            return
+        # Si detecta necesidad de visión, activar temporalmente
+        if needs_vision:
+            self.vision_active_until = current_time + self.vision_timeout
+            remaining = self.vision_timeout
+            print(f"👁️ Modo visión ACTIVADO por {remaining}s (detectado en prompt)")
         
-        # Si no necesita visión, no enviar imagen para ahorrar tokens
-        if not needs_vision:
+        # Verificar si estamos en modo visión activo
+        vision_active = current_time <= self.vision_active_until
+        
+        if vision_active and image_base64:
+            remaining = int(self.vision_active_until - current_time)
+            print(f"�️ Modo visión activo - {remaining}s restantes")
+        elif vision_active and not image_base64:
+            print("⚠️ Modo visión activo pero imagen no disponible")
+            vision_active = False
+        
+        # Si no está activo el modo visión, no usar imagen
+        if not vision_active:
             image_base64 = None
             print("📝 Modo texto (sin imagen) - ahorrando tokens")
-        else:
-            print("👁️ Modo visión activado - analizando imagen")
 
         print("Prompt:", prompt)
         prompt_lower = prompt.lower()
@@ -467,7 +484,21 @@ INSTRUCTIONS:
                 self._handle_show_diff(change_id)
                 return
         
-        # Verificar si es un comando de modificación
+        # Comando para activar visión manualmente por N segundos
+        if any(cmd in prompt_lower for cmd in ["activa vision", "activar vision", "modo vision", "enable vision", "vision on"]):
+            seconds = self._extract_seconds(prompt)
+            duration = seconds if seconds else self.vision_timeout
+            self.vision_active_until = time.time() + duration
+            print(f"👁️ Modo visión ACTIVADO MANUALMENTE por {duration}s")
+            self._tts_local(f"Modo visión activado por {duration} segundos")
+            return
+        
+        # Comando para desactivar visión
+        if any(cmd in prompt_lower for cmd in ["desactiva vision", "desactivar vision", "modo texto", "disable vision", "vision off"]):
+            self.vision_active_until = 0
+            print("📝 Modo visión DESACTIVADO - volviendo a modo texto")
+            self._tts_local("Modo visión desactivado")
+            return
         if any(cmd in prompt_lower for cmd in ["modifica", "modificar", "cambia", "cambiar", "update", "modify"]):
             filename = self._extract_filename(prompt)
             if filename:
@@ -570,6 +601,19 @@ INSTRUCTIONS:
             match = re.search(pattern, prompt, re.IGNORECASE)
             if match:
                 return match.group(1)
+        return None
+    
+    def _extract_seconds(self, prompt):
+        """Extrae número de segundos del prompt"""
+        match = re.search(r'(\d+)\s*(?:s|seg|segundos|seconds)', prompt.lower())
+        if match:
+            return int(match.group(1))
+        # Buscar solo número razonable (1-300)
+        match = re.search(r'\b(\d{1,3})\b', prompt)
+        if match:
+            num = int(match.group(1))
+            if 1 <= num <= 300:
+                return num
         return None
     
     def _handle_file_view(self, filename):
@@ -1018,8 +1062,8 @@ if __name__ == "__main__":
     screen_stream = ScreenStream(monitor=1, scale_display=0.5).start()
     print("Captura de pantalla iniciada.")
 
-    # Crear asistente con idioma español
-    assistant = Assistant(model_name="qwen3-vl:8b-long", language="es", project_path=PROJECT_PATH)
+    # Crear asistente con idioma español y timeout de visión de 10 segundos
+    assistant = Assistant(model_name="qwen3-vl:8b-long", language="es", project_path=PROJECT_PATH, vision_timeout=10)
     
     # Mostrar información inicial
     print("\n" + "="*60)
@@ -1035,6 +1079,8 @@ if __name__ == "__main__":
     print("   • 'aprueba cambio [ID]' - Aplicar cambio")
     print("   • 'rechaza cambio [ID]' - Descartar cambio")
     print("   • 'ver diferencias [ID]' - Ver diff del cambio")
+    print("   • 'activa vision [segundos]' - Activar modo visión temporalmente")
+    print("   • 'desactiva vision' - Desactivar modo visión")
     print("   • 'q' o ESC - Salir")
     print("="*60 + "\n")
 
