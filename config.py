@@ -13,7 +13,20 @@ SUGGESTIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sug
 os.makedirs(SUGGESTIONS_PATH, exist_ok=True)
 
 # -------------------------------------------------------------------
-# Configuración del modelo LLM
+# Configuración de agentes LangChain (multi-agente)
+# -------------------------------------------------------------------
+AGENT_COORDINATOR_MODEL = "qwen2.5:3b"  # Pequeño, rápido, texto-only
+AGENT_VISION_MODEL = "qwen3-vl:8b"     # Vision-capable
+AGENT_CODE_MODEL = "qwen3-vl:8b"       # Vision-capable
+AGENT_EDITOR_MODEL = "qwen3-vl:8b-extreme"  # Modelo principal
+
+# Cuantización recomendada:
+# - Vision: Q3 (más rápido)
+# - Code: Q4 (mejor calidad)
+# - Editor: sin cuantizar o Q4 (máxima calidad)
+
+# -------------------------------------------------------------------
+# Configuración del modelo LLM (legacy - para compatibilidad)
 # -------------------------------------------------------------------
 DEFAULT_MODEL = "qwen3-vl:8b-extreme"
 DEFAULT_LANGUAGE = "es"

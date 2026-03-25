@@ -4,10 +4,20 @@ Núcleo del asistente - orquesta LLM, voz, visión y gestión de archivos.
 import re
 import time
 
-from config import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_VISION_TIMEOUT, PROJECT_PATH
+from config import (
+    DEFAULT_LANGUAGE,
+    DEFAULT_MODEL,
+    DEFAULT_VISION_TIMEOUT,
+    PROJECT_PATH,
+    AGENT_COORDINATOR_MODEL,
+    AGENT_VISION_MODEL,
+    AGENT_CODE_MODEL,
+    AGENT_EDITOR_MODEL,
+)
 from file_manager import ProjectFileManager
 from llm_client import LLMClient
 from voice import VoiceManager
+from graph.workflow import AgentWorkflow
 
 
 class Assistant:
@@ -33,6 +43,14 @@ class Assistant:
 
         # Inicializar cliente LLM
         self.llm = LLMClient(model_name=self.model_name, language=self.language)
+
+        # Inicializar workflow multi-agente
+        self.agent_workflow = AgentWorkflow(
+            coordinator_model=AGENT_COORDINATOR_MODEL,
+            vision_model=AGENT_VISION_MODEL,
+            code_model=AGENT_CODE_MODEL,
+            editor_model=AGENT_EDITOR_MODEL,
+        )
 
     def answer(self, prompt, image_base64=None):
         if not prompt or not prompt.strip():
@@ -312,7 +330,7 @@ class Assistant:
         self.voice.speak(reply[:150])
 
     def _handle_file_modification(self, prompt, filename, image_base64):
-        """Maneja solicitud de modificación de archivo"""
+        """Maneja solicitud de modificación de archivo usando workflow multi-agente"""
         content, error = self.file_manager.read_file(filename)
         if error:
             reply = f"❌ {error}"
@@ -320,6 +338,70 @@ class Assistant:
             self.voice.speak(reply)
             return
 
+        # Usar el workflow multi-agente para procesar la modificación
+        print(f"\n🤖 Iniciando workflow multi-agente para modificar {filename}...")
+
+        result = self.agent_workflow.run(
+            prompt=prompt,
+            image_b64=image_base64,
+            target_file=filename,
+            file_content=content
+        )
+
+        # Mostrar métricas del workflow
+        total_tokens = sum(result.get("tokens_used", {}).values())
+        execution_path = result.get("execution_path", [])
+
+        print(f"\n📊 Workflow completado:")
+        print(f"   - Camino: {' -> '.join(execution_path)}")
+        print(f"   - Tokens usados: ~{total_tokens}")
+
+        # Procesar resultado del editor
+        editor_result = result.get("editor_result")
+
+        if editor_result and editor_result.get("success"):
+            proposed_code = editor_result.get("code")
+            mod_id = editor_result.get("modification_id", "unknown")
+
+            # Proponer el cambio
+            success, proposal_result = self.file_manager.propose_change(
+                filename,
+                proposed_code,
+                description=prompt[:100]
+            )
+
+            if success:
+                change_id = proposal_result
+                assistant_reply = (
+                    f"✅ He analizado y modificado `{filename}` usando el workflow multi-agente.\n\n"
+                    f"📊 Camino de ejecución: {' -> '.join(execution_path)}\n"
+                    f"💾 Tokens optimizados: ~{total_tokens} (usando modelos especializados)\n\n"
+                    f"⏳ **Cambio propuesto guardado como: `{change_id}`**"
+                )
+
+                print("Response:", assistant_reply)
+                self.llm.chat_history.append({"role": "user", "content": prompt})
+                self.llm.chat_history.append({"role": "assistant", "content": assistant_reply})
+                self.voice.speak(f"He preparado una modificación usando {len(execution_path)} agentes. Revisa en pantalla y usa el teclado para decidir.")
+                self._show_pending_change_menu(change_id)
+                return
+            else:
+                assistant_reply = f"❌ Error guardando propuesta: {proposal_result}"
+        elif editor_result:
+            assistant_reply = f"❌ El agente editor no pudo generar código: {editor_result.get('error', 'Error desconocido')}"
+        else:
+            # Fallback al método original si el workflow no generó código
+            print("⚠️ Workflow no generó código, usando método legacy...")
+            self._handle_file_modification_legacy(prompt, filename, image_base64, content)
+            return
+
+        print("Response:", assistant_reply)
+        self.llm.chat_history.append({"role": "user", "content": prompt})
+        self.llm.chat_history.append({"role": "assistant", "content": assistant_reply})
+        self.voice.speak(f"Hubo un problema preparando la modificación.")
+
+    def _handle_file_modification_legacy(self, prompt, filename, image_base64, content):
+        """Método legacy de modificación (fallback)"""
         context_prompt = f"""El usuario quiere modificar el archivo `{filename}`.
 
 CONTENIDO ACTUAL DEL ARCHIVO ({len(content.splitlines())} líneas total):
