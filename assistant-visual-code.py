@@ -16,10 +16,151 @@ import subprocess
 import difflib
 import json
 from pathlib import Path
+import requests  # Para LLM remoto
 
 # Opcional: suprimir warnings de ALSA y Qt (puedes descomentar si quieres)
 # os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 # os.environ['ALSA_CARD'] = "Generic"
+
+# -------------------------------------------------------------------
+# Configuración de LLMs - Modo Híbrido
+# -------------------------------------------------------------------
+# LLM Remoto (para razonamiento intenso): OpenAI API compatible
+REMOTE_LLM_ENABLED = True  # Activar/desactivar LLM remoto
+REMOTE_LLM_API_KEY = os.getenv("OPENAI_API_KEY", "")  # o OPENROUTER_API_KEY, etc.
+REMOTE_LLM_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")  # o https://openrouter.ai/api/v1
+REMOTE_LLM_MODEL = os.getenv("REMOTE_LLM_MODEL", "gpt-4o")  # Modelo para razonamiento
+REMOTE_LLM_TEMPERATURE = 0.3
+REMOTE_LLM_MAX_TOKENS = 4000
+
+# LLM Local (Ollama - para aplicación de cambios a archivos)
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen3-vl:8b-extreme")
+
+# Validar configuración remota
+if REMOTE_LLM_ENABLED and not REMOTE_LLM_API_KEY:
+    print("⚠️ ADVERTENCIA: REMOTE_LLM_ENABLED=True pero no se encontró API key en OPENAI_API_KEY")
+    print("   El sistema funcionará solo con LLM local (Ollama)")
+    REMOTE_LLM_ENABLED = False
+
+# -------------------------------------------------------------------
+# Provider de LLM Híbrido
+# -------------------------------------------------------------------
+class HybridLLMProvider:
+    """
+    Proveedor híbrido de LLM:
+    - Remoto: Para razonamiento intenso, planificación, análisis complejo
+    - Local (Ollama): Para aplicación de cambios a archivos, tareas mecánicas
+    """
+    
+    def __init__(self):
+        self.remote_enabled = REMOTE_LLM_ENABLED
+        self.remote_api_key = REMOTE_LLM_API_KEY
+        self.remote_base_url = REMOTE_LLM_BASE_URL.rstrip('/')
+        self.remote_model = REMOTE_LLM_MODEL
+        self.remote_temperature = REMOTE_LLM_TEMPERATURE
+        self.remote_max_tokens = REMOTE_LLM_MAX_TOKENS
+        self.local_model = LOCAL_LLM_MODEL
+        
+        # Contadores de uso
+        self.remote_calls = 0
+        self.local_calls = 0
+        
+        print(f"🌐 LLM Remoto: {'✅ Habilitado' if self.remote_enabled else '❌ Deshabilitado'}")
+        if self.remote_enabled:
+            print(f"   Modelo: {self.remote_model}")
+            print(f"   Endpoint: {self.remote_base_url}")
+        print(f"🏠 LLM Local: {self.local_model} (Ollama)")
+    
+    def chat_remote(self, messages, temperature=None, max_tokens=None):
+        """
+        Usa LLM remoto para razonamiento complejo.
+        API compatible con OpenAI.
+        """
+        if not self.remote_enabled:
+            raise ValueError("LLM remoto no está habilitado")
+        
+        headers = {
+            "Authorization": f"Bearer {self.remote_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Formato OpenAI
+        payload = {
+            "model": self.remote_model,
+            "messages": messages,
+            "temperature": temperature or self.remote_temperature,
+            "max_tokens": max_tokens or self.remote_max_tokens
+        }
+        
+        try:
+            response = requests.post(
+                f"{self.remote_base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=120
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            self.remote_calls += 1
+            
+            result = {
+                'content': data['choices'][0]['message']['content'],
+                'prompt_tokens': data.get('usage', {}).get('prompt_tokens', 0),
+                'completion_tokens': data.get('usage', {}).get('completion_tokens', 0),
+                'total_tokens': data.get('usage', {}).get('total_tokens', 0),
+                'model': data.get('model', self.remote_model)
+            }
+            
+            print(f"🌐 Remote LLM [{self.remote_model}]: {result['prompt_tokens']}↓ {result['completion_tokens']}↑ tokens")
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error en LLM remoto: {e}")
+            raise
+    
+    def chat_local(self, messages, images=None):
+        """
+        Usa LLM local (Ollama) para tareas mecánicas.
+        Ideal para aplicar cambios a archivos.
+        """
+        try:
+            # Preparar mensajes para Ollama
+            ollama_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+            
+            # Si hay imagen, agregarla al último mensaje de usuario
+            if images and len(ollama_messages) > 0:
+                for i in range(len(ollama_messages) - 1, -1, -1):
+                    if ollama_messages[i]["role"] == "user":
+                        ollama_messages[i]["images"] = images if isinstance(images, list) else [images]
+                        break
+            
+            response = ollama.chat(model=self.local_model, messages=ollama_messages)
+            
+            self.local_calls += 1
+            
+            result = {
+                'content': response['message']['content'].strip(),
+                'prompt_tokens': response.get('prompt_eval_count', 0),
+                'completion_tokens': response.get('eval_count', 0),
+                'model': self.local_model
+            }
+            
+            print(f"🏠 Local LLM [{self.local_model}]: {result['prompt_tokens']}↓ {result['completion_tokens']}↑ tokens")
+            return result
+            
+        except Exception as e:
+            print(f"❌ Error en LLM local: {e}")
+            raise
+    
+    def get_stats(self):
+        """Retorna estadísticas de uso"""
+        return {
+            'remote_calls': self.remote_calls,
+            'local_calls': self.local_calls,
+            'remote_enabled': self.remote_enabled
+        }
+
 
 # -------------------------------------------------------------------
 # Configuración del proyecto objetivo
@@ -295,20 +436,26 @@ class ScreenStream:
             self.thread.join()
 
 # -------------------------------------------------------------------
-# Asistente con modelo local (Ollama + Whisper GPU + TTS local)
+# Asistente con modelo HÍBRIDO (Remoto + Local)
 # -------------------------------------------------------------------
 class Assistant:
-    def __init__(self, model_name="qwen3-vl:8b-extreme", language="es", project_path=None, vision_timeout=5):
+    def __init__(self, model_name=None, language="es", project_path=None, vision_timeout=5, 
+                 use_remote_for_reasoning=True):
         """
-        model_name: modelo en Ollama (ej: "qwen2.5-vl:7b")
+        model_name: DEPRECADO - Se usa LOCAL_LLM_MODEL. Mantenido para compatibilidad.
         language: idioma para Whisper y para el prompt del sistema (es, en, etc.)
         project_path: ruta al proyecto a modificar
         vision_timeout: segundos que dura el modo visión activado (default: 30s)
+        use_remote_for_reasoning: si True, usa LLM remoto para razonamiento complejo
         """
-        self.model_name = model_name
         self.language = language
         self.vision_timeout = vision_timeout
         self.vision_active_until = 0  # Timestamp cuando expira el modo visión
+        self.use_remote_for_reasoning = use_remote_for_reasoning and REMOTE_LLM_ENABLED
+        
+        # Inicializar provider híbrido
+        self.llm = HybridLLMProvider()
+        self.model_name = LOCAL_LLM_MODEL  # Para compatibilidad con código existente
         
         # Inicializar gestor de archivos del proyecto
         self.project_path = project_path or PROJECT_PATH
@@ -365,11 +512,37 @@ class Assistant:
         # Historial de conversación simple (lista de dicts)
         self.chat_history = []
         
-        # Prompt del sistema en el idioma seleccionado
-        if language == "es":
-            self.system_prompt = f"""Eres un asistente experto en visión por computadora y programación en Python.
+        # Prompt del sistema para RAZONAMIENTO (usado con LLM remoto)
+        self.system_prompt_reasoning = f"""Eres un asistente experto en visión por computadora y programación en Python.
 
 Tu tarea es ayudar a mejorar un sistema de reconocimiento de caballos ubicado en: {self.project_path}
+
+MODO DE TRABAJO HÍBRIDO:
+- Tú (LLM Remoto) eres el EXPERTO en razonamiento: analizas la solicitud, planeas la solución, decides la estrategia
+- El LLM Local (Ollama) ejecuta las tareas mecánicas: aplicar cambios concretos a archivos
+
+TU ROL ES:
+1. ENTENDER profundamente lo que el usuario necesita
+2. ANALIZAR el contexto y decidir la mejor solución
+3. EXPLICAR el plan de acción paso a paso
+4. Cuando se requiera código, DELEGAR la generación al LLM local
+
+CAPACIDADES:
+- Ver la pantalla y analizar videos de carreras de caballos
+- Leer archivos del proyecto para análisis
+- Proponer estrategias arquitectónicas
+- Explicar por qué cierta solución es mejor
+
+INSTRUCCIONES:
+- Sé conciso pero completo en tus explicaciones
+- Cuando el usuario pida cambios de código, explica QUÉ hay que cambiar y POR QUÉ
+- El LLM local se encargará del CÓMO (implementación concreta)
+- No generes código a menos que sea pseudocódigo para explicar conceptos
+"""
+        
+        # Prompt del sistema para GENERACIÓN DE CÓDIGO (usado con LLM local)
+        if language == "es":
+            self.system_prompt_coding = f"""Eres un asistente especializado en generación de código Python.
 
 REGLA ABSOLUTA #1 - ARCHIVOS COMPLETOS OBLIGATORIOS:
 CUANDO MODIFIQUES CÓDIGO, SIEMPRE DEVUELVES EL ARCHIVO COMPLETO. NUNCA SOLO FRAGMENTOS.
@@ -383,13 +556,13 @@ REGLA ABSOLUTA #2 - ESTRUCTURA DE RESPUESTA:
 2. Proporciona el CÓDIGO COMPLETO en bloque markdown ```python ... ```
 3. Confirma el número de líneas del archivo
 
-CAPACIDADES DISPONIBLES:
+CAPACIDADES:
 1. Ver la pantalla y analizar videos de carreras de caballos
 2. Leer archivos del proyecto: Puedes leer cualquier archivo .py del proyecto
 3. Proponer cambios: Puedes sugerir modificaciones al código (SIEMPRE archivos completos)
 4. El usuario debe aprobar los cambios antes de aplicarlos
 
-ARCHIVOS PRINCIPALES DEL PROYECTO:
+ARCHIVOS PRINCIPALES:
 - app.py: Punto de entrada principal, procesamiento de video en tiempo real
 - tracker.py: Clase EfficientHorseTracker para seguimiento de caballos
 - yolo_utils.py: Utilidades para YOLO
@@ -399,14 +572,9 @@ INSTRUCCIONES ADICIONALES:
 - Cuando el usuario pida ver/modificar un archivo, usa las funciones disponibles
 - SIEMPRE devuelve código completo, nunca fragmentos
 - Incluye el código completo en bloques markdown ```python ... ```
-- Si el usuario dice "aprueba cambio X" o "rechaza cambio X", usa las funciones correspondientes
-- Para ver archivos: el usuario puede decir "muéstrame el archivo tracker.py"
-- Para modificar: el usuario puede decir "modifica tracker.py para que..."
 """
         else:
-            self.system_prompt = f"""You are an expert assistant in computer vision and Python programming.
-
-Your task is to help improve a horse recognition system located at: {self.project_path}
+            self.system_prompt_coding = f"""You are an expert assistant in computer vision and Python programming.
 
 AVAILABLE CAPABILITIES:
 1. View screen and analyze horse racing videos
@@ -424,9 +592,6 @@ INSTRUCTIONS:
 - When user asks to view/modify a file, use available functions
 - Always explain proposed changes before showing code
 - Include complete code in markdown blocks ```python ... ```
-- If user says "approve change X" or "reject change X", use corresponding functions
-- To view files: user can say "show me tracker.py"
-- To modify: user can say "modify tracker.py to..."
 """
 
     def answer(self, prompt, image_base64=None):
@@ -550,10 +715,10 @@ INSTRUCTIONS:
         
         return False
 
-    # Respuesta normal del asistente
+    # Respuesta normal del asistente - Usa LLM REMOTO para razonamiento
     def _normal_response(self, prompt, image_base64):
-        """Respuesta normal del asistente"""
-        messages = [{"role": "system", "content": self.system_prompt}]
+        """Respuesta normal del asistente usando LLM remoto para razonamiento"""
+        messages = [{"role": "system", "content": self.system_prompt_reasoning}]
         
         # Agregar historial
         for msg in self.chat_history[-4:]:
@@ -566,22 +731,37 @@ INSTRUCTIONS:
             messages.append({"role": "user", "content": prompt})
         
         try:
-            response = ollama.chat(model=self.model_name, messages=messages)
-            assistant_reply = response['message']['content'].strip()
-            # Mostrar información detallada de tokens
-            prompt_tokens = response.get('prompt_eval_count', 'N/A')
-            output_tokens = response.get('eval_count', 'N/A')
-            total_duration = response.get('total_duration', 'N/A')
-            # Estimar tokens de imagen si está presente
-            if image_base64:
-                image_chars = len(image_base64)
-                est_image_tokens = int(image_chars * 0.75)
-                print(f"📊 Tokens - Prompt texto: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
-                print(f"📊 Contexto usado: {prompt_tokens + est_image_tokens if prompt_tokens != 'N/A' else est_image_tokens:,} / 262144 disponibles")
+            if self.use_remote_for_reasoning and self.llm.remote_enabled:
+                # Usar LLM remoto para razonamiento complejo
+                response = self.llm.chat_remote(messages)
+                assistant_reply = response['content']
+                prompt_tokens = response['prompt_tokens']
+                output_tokens = response['completion_tokens']
+                model_used = response['model']
+                
+                if image_base64:
+                    image_chars = len(image_base64)
+                    est_image_tokens = int(image_chars * 0.75)
+                    print(f"📊 Tokens - Prompt: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
+                    print(f"📊 Modelo remoto: {model_used}")
+                else:
+                    print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} | Modelo: {model_used}")
             else:
-                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (sin imagen - ahorrando ~45k tokens)")
+                # Fallback a LLM local si remoto no está disponible
+                response = self.llm.chat_local(messages, images=image_base64)
+                assistant_reply = response['content']
+                prompt_tokens = response['prompt_tokens']
+                output_tokens = response['completion_tokens']
+                
+                if image_base64:
+                    image_chars = len(image_base64)
+                    est_image_tokens = int(image_chars * 0.75)
+                    print(f"📊 Tokens - Prompt: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
+                else:
+                    print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (local)")
+                    
         except Exception as e:
-            assistant_reply = f"Error en ollama: {e}"
+            assistant_reply = f"Error en LLM: {e}"
         
         print("Response:", assistant_reply)
         self.chat_history.append({"role": "user", "content": prompt})
@@ -770,8 +950,8 @@ FORMATO CORRECTO:
 
 Si devuelves solo un fragmento, el sistema RECHAZARÁ automáticamente tu respuesta."""
 
-        # Llamar al modelo
-        messages = [{"role": "system", "content": self.system_prompt}]
+        # Llamar al modelo LOCAL (Ollama) - Especializado en generación de código
+        messages = [{"role": "system", "content": self.system_prompt_coding}]
         
         # Solo incluir imagen si está disponible (para no gastar tokens innecesariamente)
         if image_base64:
@@ -780,22 +960,22 @@ Si devuelves solo un fragmento, el sistema RECHAZARÁ automáticamente tu respue
             messages.append({"role": "user", "content": context_prompt})
         
         try:
-            response = ollama.chat(model=self.model_name, messages=messages)
-            assistant_reply = response['message']['content'].strip()
-            # Mostrar información detallada de tokens
-            prompt_tokens = response.get('prompt_eval_count', 'N/A')
-            output_tokens = response.get('eval_count', 'N/A')
-            # Estimar tokens de imagen si está presente
+            # SIEMPRE usar LLM local para aplicar cambios de archivo
+            response = self.llm.chat_local(messages, images=image_base64)
+            assistant_reply = response['content']
+            prompt_tokens = response['prompt_tokens']
+            output_tokens = response['completion_tokens']
+            
             if image_base64:
                 image_chars = len(image_base64)
                 est_image_tokens = int(image_chars * 0.75)
-                total_context = (prompt_tokens + est_image_tokens) if prompt_tokens != 'N/A' else est_image_tokens
-                print(f"📊 Tokens - Prompt texto: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
-                print(f"📊 Contexto usado: ~{total_context:,} / 262144 disponibles ({100*total_context/262144:.1f}%)")
+                total_context = (prompt_tokens + est_image_tokens) if prompt_tokens else est_image_tokens
+                print(f"📊 Tokens - Prompt: {prompt_tokens} | Imagen (~): {est_image_tokens:,} | Generados: {output_tokens}")
+                print(f"📊 Contexto usado: ~{total_context:,} (LLM Local)")
             else:
-                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (sin imagen - ahorrando tokens)")
+                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (LLM Local)")
         except Exception as e:
-            assistant_reply = f"Error generando respuesta: {e}"
+            assistant_reply = f"Error generando respuesta con LLM local: {e}"
         
         # Extraer código propuesto
         proposed_code = self._extract_code(assistant_reply)
@@ -853,8 +1033,8 @@ SOLICITUD DEL USUARIO:
 
 ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáticamente."""
 
-        # Llamar al modelo
-        messages = [{"role": "system", "content": self.system_prompt}]
+        # Llamar al modelo LOCAL (Ollama) para elegir archivo y generar código
+        messages = [{"role": "system", "content": self.system_prompt_coding}]
         
         # Solo incluir imagen si está disponible
         if image_base64:
@@ -863,17 +1043,18 @@ ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáti
             messages.append({"role": "user", "content": smart_prompt})
         
         try:
-            response = ollama.chat(model=self.model_name, messages=messages)
-            assistant_reply = response['message']['content'].strip()
-            # Mostrar información de tokens
-            prompt_tokens = response.get('prompt_eval_count', 'N/A')
-            output_tokens = response.get('eval_count', 'N/A')
+            # Usar LLM local para esta tarea de generación de código
+            response = self.llm.chat_local(messages, images=image_base64)
+            assistant_reply = response['content']
+            prompt_tokens = response['prompt_tokens']
+            output_tokens = response['completion_tokens']
+            
             if image_base64:
-                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (con imagen)")
+                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (con imagen, LLM Local)")
             else:
-                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (sin imagen)")
+                print(f"📊 Tokens - Prompt: {prompt_tokens} | Generados: {output_tokens} (LLM Local)")
         except Exception as e:
-            assistant_reply = f"Error generando respuesta: {e}"
+            assistant_reply = f"Error generando respuesta con LLM local: {e}"
             print("Response:", assistant_reply)
             self._tts_local(assistant_reply)
             return
@@ -1078,13 +1259,15 @@ if __name__ == "__main__":
     screen_stream = ScreenStream(monitor=1, scale_display=0.5, max_width=896, jpeg_quality=45).start()
     print("Captura de pantalla iniciada.")
 
-    # Crear asistente con idioma español y timeout de visión de 10 segundos
-    assistant = Assistant(model_name="qwen3-vl:8b-extreme", language="es", project_path=PROJECT_PATH, vision_timeout=5)
+    # Crear asistente híbrido con LLM remoto para razonamiento y local para código
+    assistant = Assistant(language="es", project_path=PROJECT_PATH, vision_timeout=5)
     
     # Mostrar información inicial
     print("\n" + "="*60)
-    print("🤖 ASISTENTE DE CÓDIGO CON VISIÓN")
+    print("🤖 ASISTENTE HÍBRIDO DE CÓDIGO CON VISIÓN")
     print("="*60)
+    print(f"🌐 LLM Remoto: {REMOTE_LLM_MODEL if REMOTE_LLM_ENABLED else 'Deshabilitado'} (razonamiento)")
+    print(f"🏠 LLM Local: {LOCAL_LLM_MODEL} (código/archivos)")
     print(f"📁 Proyecto objetivo: {PROJECT_PATH}")
     print(f"📂 Sugerencias pendientes: {SUGGESTIONS_PATH}")
     print("\n📋 COMANDOS DISPONIBLES:")
