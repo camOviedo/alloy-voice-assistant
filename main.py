@@ -24,16 +24,62 @@ from screen_capture import ScreenStream
 # Variable global para el callback de audio
 assistant = None
 screen_stream = None
+vision_active = False
+
+
+def start_vision():
+    """Inicia la captura de pantalla y el modo visión"""
+    global screen_stream, vision_active
+    if screen_stream is None or not vision_active:
+        print("\n👁️ Iniciando modo visión...")
+        with mss.mss() as sct:
+            print("Monitores detectados:", sct.monitors)
+
+        screen_stream = ScreenStream(
+            monitor=DEFAULT_MONITOR,
+            scale_display=DEFAULT_SCALE_DISPLAY,
+            max_width=DEFAULT_MAX_WIDTH,
+            jpeg_quality=DEFAULT_JPEG_QUALITY
+        ).start()
+        vision_active = True
+        print("✅ Captura de pantalla iniciada.")
+        assistant.vision_active_until = time.time() + 3600  # 1 hora por defecto
+        return True
+    return False
+
+
+def stop_vision():
+    """Detiene la captura de pantalla y el modo visión"""
+    global screen_stream, vision_active
+    if screen_stream and vision_active:
+        print("\n🛑 Deteniendo modo visión...")
+        screen_stream.stop()
+        screen_stream = None
+        vision_active = False
+        assistant.vision_active_until = 0
+        cv2.destroyAllWindows()
+        print("✅ Captura de pantalla detenida.")
+        return True
+    return False
+
+
+def toggle_vision(enable):
+    """Activa o desactiva el modo visión"""
+    if enable:
+        return start_vision()
+    else:
+        return stop_vision()
 
 
 def audio_callback(recognizer, audio):
     """Se ejecuta cuando se detecta voz en el micrófono"""
+    global vision_active, screen_stream
     try:
         prompt = assistant.voice.transcribe(audio)
-        image_b64 = screen_stream.read(encode=True)
-        if image_b64 is None:
-            print("Imagen no disponible aún, esperando...")
-            return
+        # Solo obtener imagen si la visión está activa
+        image_b64 = None
+        if vision_active and screen_stream:
+            image_b64 = screen_stream.read(encode=True)
         assistant.answer(prompt, image_b64)
     except sr.UnknownValueError:
         print("No se entendió el audio")
@@ -43,28 +89,34 @@ def audio_callback(recognizer, audio):
 
 def show_input_menu():
     """Muestra menú para elegir método de entrada"""
+    status_icon = "🟢" if vision_active else "🔴"
     print("\n" + "="*50)
     print("🎯 SELECCIONA MÉTODO DE ENTRADA:")
     print("="*50)
-    print("  [1] ⌨️  Escribir prompt (teclado)")
-    print("  [2] 🎤 Hablar prompt (voz)")
+    print(f"  [1] ⌨️  Escribir prompt (teclado)")
+    print(f"  [2] 🎤 Hablar prompt (voz)")
+    print(f"  [v] {status_icon} {'Desactivar' if vision_active else 'Activar'} visión")
     print("  [q] 🚪 Salir")
     print("="*50)
-    print("Ingresa opción (1/2/q): ", end="", flush=True)
+    print(f"Estado visión: {'ACTIVA' if vision_active else 'INACTIVA'}")
+    print("Ingresa opción (1/2/v/q): ", end="", flush=True)
 
 
 def process_text_input():
     """Procesa entrada por teclado"""
+    global vision_active, screen_stream
     try:
         prompt = input().strip()
         if prompt.lower() in ['q', 'salir', 'exit']:
             return False
         if prompt:
-            image_b64 = screen_stream.read(encode=True)
-            if image_b64:
-                assistant.answer(prompt, image_b64)
-            else:
-                print("⚠️ Imagen no disponible, esperando...")
+            # Solo obtener imagen si la visión está activa
+            image_b64 = None
+            if vision_active and screen_stream:
+                image_b64 = screen_stream.read(encode=True)
+                if image_b64 is None:
+                    print("⚠️ Imagen no disponible, continuando sin visión...")
+            assistant.answer(prompt, image_b64)
         return True
     except EOFError:
         return False
@@ -74,22 +126,9 @@ def process_text_input():
 
 
 def main():
-    global assistant, screen_stream
+    global assistant, screen_stream, vision_active
 
-    # Iniciar captura de pantalla
-    print("Iniciando captura de pantalla...")
-    with mss.mss() as sct:
-        print("Monitores detectados:", sct.monitors)
-
-    screen_stream = ScreenStream(
-        monitor=DEFAULT_MONITOR,
-        scale_display=DEFAULT_SCALE_DISPLAY,
-        max_width=DEFAULT_MAX_WIDTH,
-        jpeg_quality=DEFAULT_JPEG_QUALITY
-    ).start()
-    print("Captura de pantalla iniciada.")
-
-    # Crear asistente
+    # Crear asistente (sin captura de pantalla inicial)
     assistant = Assistant(
         model_name=DEFAULT_MODEL,
         language="es",
@@ -114,6 +153,8 @@ def main():
     print("   • 'activa vision [segundos]' - Activar modo visión temporalmente")
     print("   • 'desactiva vision' - Desactivar modo visión")
     print("   • 'q' o ESC - Salir")
+    print("\n💡 La captura de pantalla NO está activa al inicio.")
+    print("   Presiona 'v' en el menú para activarla cuando la necesites.")
     print("="*60 + "\n")
 
     # Configurar reconocimiento de voz
@@ -153,8 +194,14 @@ def main():
     # Bucle principal
     try:
         while True:
-            frame_display = screen_stream.read_display()
-            cv2.imshow("Screen Capture", frame_display)
+            # Mostrar ventana de captura solo si está activa
+            if vision_active and screen_stream:
+                frame_display = screen_stream.read_display()
+                if frame_display is not None:
+                    cv2.imshow("Screen Capture", frame_display)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == 27:
+                    break
 
             if not is_listening:
                 if not menu_shown:
@@ -184,18 +231,22 @@ def main():
                             time.sleep(2)
                         except KeyboardInterrupt:
                             toggle_voice_listening(False)
+                    elif choice.lower() == 'v':
+                        # Toggle visión
+                        if vision_active:
+                            stop_vision()
+                        else:
+                            start_vision()
                     else:
                         print(f"\n⚠️ Opción '{choice}' no válida")
             else:
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == 27:
-                    toggle_voice_listening(False)
-                    break
+                # En modo escucha, solo checkear teclas si visión está activa
+                if vision_active and screen_stream:
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q') or key == 27:
+                        toggle_voice_listening(False)
+                        break
                 time.sleep(0.1)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q') or key == 27:
-                break
 
     except KeyboardInterrupt:
         print("\n\nInterrupción por teclado.")
@@ -203,7 +254,8 @@ def main():
         print("\nDeteniendo...")
         if is_listening and stop_listening:
             stop_listening(wait_for_stop=False)
-        screen_stream.stop()
+        if vision_active:
+            stop_vision()
         cv2.destroyAllWindows()
         print("Programa terminado.")
 
