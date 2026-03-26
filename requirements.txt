@@ -2,6 +2,8 @@ opencv-python
 langchain
 langchain-core
 langchain-community
+langgraph
+langchain-ollama
 python-dotenv
 pyaudio
 soundfile
