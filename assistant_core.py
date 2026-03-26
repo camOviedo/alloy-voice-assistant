@@ -348,9 +348,15 @@ class Assistant:
             file_content=content
         )
 
+        # Defensive check for None result
+        if result is None:
+            print("⚠️ Workflow retornó None, usando método legacy...")
+            self._handle_file_modification_legacy(prompt, filename, image_base64, content)
+            return
+
         # Mostrar métricas del workflow
-        total_tokens = sum(result.get("tokens_used", {}).values())
-        execution_path = result.get("execution_path", [])
+        total_tokens = sum((result.get("tokens_used") or {}).values())
+        execution_path = result.get("execution_path") or []
 
         print(f"\n📊 Workflow completado:")
         print(f"   - Camino: {' -> '.join(execution_path)}")

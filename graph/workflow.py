@@ -227,7 +227,8 @@ class AgentWorkflow:
 
     def _route_from_code(self, state: AgentState) -> str:
         """Decide la ruta después del análisis de código."""
-        if state["needs_code_generation"] and state["code_analysis"].get("success", False):
+        code_analysis = state.get("code_analysis") or {}
+        if state["needs_code_generation"] and code_analysis.get("success", False):
             return "editor"
         return "finalize"
 
@@ -243,11 +244,19 @@ class AgentWorkflow:
             filename=state["target_file"],
             original_code=state["file_content"],
             user_request=state["user_prompt"],
-            code_analysis=state.get("code_analysis", {}).get("analysis", ""),
+            code_analysis=(state.get("code_analysis") or {}).get("analysis", ""),
             image_analysis=state.get("vision_analysis")
         )
 
         state["editor_result"] = result
+        
+        # Defensive check for None result
+        if result is None:
+            state["editor_result"] = {"error": "Editor returned None", "success": False}
+            state["tokens_used"]["editor"] = 0
+            print(f"[Workflow] Editor: error - retornó None")
+            return state
+        
         state["tokens_used"]["editor"] = len(result.get("full_response", "").split()) // 4
 
         if result.get("success"):
