@@ -395,6 +395,27 @@ class Assistant:
                 assistant_reply = f"❌ Error guardando propuesta: {proposal_result}"
         elif editor_result:
             assistant_reply = f"❌ El agente editor no pudo generar código: {editor_result.get('error', 'Error desconocido')}"
+        elif result.get("code_analysis"):
+            # Mostrar análisis del CodeAgent cuando no hay código generado
+            code_analysis = result["code_analysis"]
+            analysis_text = code_analysis.get("analysis", "")
+            summary = code_analysis.get("summary", "")
+            
+            assistant_reply = f"📋 **Análisis de código completado**\n\n"
+            if summary:
+                assistant_reply += f"**Resumen:** {summary}\n\n"
+            assistant_reply += f"**Análisis detallado:**\n{analysis_text[:1500]}"
+            if len(analysis_text) > 1500:
+                assistant_reply += f"\n\n... (análisis truncado, total: {len(analysis_text)} caracteres)"
+            
+            assistant_reply += f"\n\n📊 Camino de ejecución: {' -> '.join(execution_path)}"
+            assistant_reply += f"\n💾 Tokens usados: ~{total_tokens}"
+            
+            print("Response:", assistant_reply)
+            self.llm.chat_history.append({"role": "user", "content": prompt})
+            self.llm.chat_history.append({"role": "assistant", "content": assistant_reply})
+            self.voice.speak("He completado el análisis del código. Revisa los detalles en pantalla.")
+            return
         else:
             # Fallback al método original si el workflow no generó código
             print("⚠️ Workflow no generó código, usando método legacy...")
