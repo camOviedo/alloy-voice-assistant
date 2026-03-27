@@ -213,3 +213,151 @@ class EditorMemory(JSONMemory):
         context_parts.append("--- Fin del historial ---\n")
 
         return "\n".join(context_parts)
+
+
+class ProjectMemory(JSONMemory):
+    """Memoria de análisis de proyecto para el CodeAgent.
+    Almacena análisis de archivos individuales y resumen del proyecto.
+    Se invalida automáticamente si el archivo cambia (checksum)."""
+
+    def __init__(self, memory_dir: str = None):
+        super().__init__("project", memory_dir)
+
+    def get_file_analysis(self, filepath: str, content: str = None) -> dict:
+        """
+        Obtiene análisis de archivo si existe y es válido.
+
+        Args:
+            filepath: Ruta del archivo
+            content: Contenido actual del archivo (para validar checksum)
+
+        Returns:
+            Dict con el análisis o None si no existe o está desactualizado
+        """
+        analyses = self.get("file_analyses", {})
+        if filepath not in analyses:
+            return None
+
+        entry = analyses[filepath]
+
+        # Si se proporciona contenido, validar checksum
+        if content is not None:
+            current_hash = self.compute_hash(content)
+            if entry.get("checksum") != current_hash:
+                print(f"[ProjectMemory] Análisis desactualizado para {filepath}")
+                return None
+
+        return entry
+
+    def save_file_analysis(self, filepath: str, content: str, analysis: dict) -> None:
+        """
+        Guarda análisis de un archivo con su checksum.
+
+        Args:
+            filepath: Ruta del archivo
+            content: Contenido actual del archivo
+            analysis: Dict con el análisis del CodeAgent
+        """
+        analyses = self.get("file_analyses", {})
+
+        analyses[filepath] = {
+            "analysis": analysis.get("analysis", ""),
+            "summary": analysis.get("summary", ""),
+            "files_affected": analysis.get("files_affected", [filepath]),
+            "lines_to_modify": analysis.get("lines_to_modify", []),
+            "approach": analysis.get("approach", ""),
+            "considerations": analysis.get("considerations", []),
+            "checksum": self.compute_hash(content),
+            "timestamp": time.time(),
+            "line_count": len(content.splitlines())
+        }
+
+        self.set("file_analyses", analyses)
+        print(f"[ProjectMemory] Análisis guardado para {filepath}")
+
+    def get_project_summary(self) -> str:
+        """Obtiene resumen general del proyecto si existe."""
+        return self.get("project_summary", "")
+
+    def save_project_summary(self, summary: str, files_analyzed: list) -> None:
+        """
+        Guarda resumen general del proyecto.
+
+        Args:
+            summary: Texto del resumen
+            files_analyzed: Lista de archivos incluidos en el resumen
+        """
+        self.set("project_summary", summary)
+        self.set("summary_files", files_analyzed)
+        self.set("summary_timestamp", time.time())
+
+    def get_cached_files_count(self) -> int:
+        """Retorna cuántos archivos tienen análisis en caché."""
+        return len(self.get("file_analyses", {}))
+
+    def clear_outdated_analyses(self, project_files: list) -> int:
+        """
+        Limpia análisis de archivos que ya no existen en el proyecto.
+
+        Args:
+            project_files: Lista de archivos actualmente en el proyecto
+
+        Returns:
+            Número de análisis eliminados
+        """
+        analyses = self.get("file_analyses", {})
+        to_remove = [f for f in analyses if f not in project_files]
+
+        for f in to_remove:
+            del analyses[f]
+
+        if to_remove:
+            self.set("file_analyses", analyses)
+            print(f"[ProjectMemory] Limpiados {len(to_remove)} análisis obsoletos")
+
+        return len(to_remove)
+
+    def get_all_cached_analyses(self) -> dict:
+        """
+        Obtiene todos los análisis cacheados.
+
+        Returns:
+            Dict {filepath: analysis_data}
+        """
+        return self.get("file_analyses", {})
+
+    def build_context_from_cache(self, target_file: str = None) -> str:
+        """
+        Construye contexto de proyecto desde caché.
+
+        Args:
+            target_file: Archivo específico a modificar (opcional)
+
+        Returns:
+            String con contexto del proyecto
+        """
+        analyses = self.get("file_analyses", {})
+        if not analyses:
+            return ""
+
+        context_parts = ["\n=== CONTEXTO DEL PROYECTO (desde memoria) ==="]
+
+        # Incluir resumen si existe
+        summary = self.get_project_summary()
+        if summary:
+            context_parts.append(f"\n**Resumen del proyecto:**\n{summary[:1000]}...")
+
+        # Incluir análisis del archivo objetivo primero
+        if target_file and target_file in analyses:
+            entry = analyses[target_file]
+            context_parts.append(f"\n**Análisis previo de {target_file}:**")
+            context_parts.append(f"- Resumen: {entry.get('summary', 'N/A')}")
+            context_parts.append(f"- Enfoque: {entry.get('approach', 'N/A')}")
+            if entry.get('lines_to_modify'):
+                context_parts.append(f"- Líneas relevantes: {entry['lines_to_modify']}")
+
+        # Incluir conteo de archivos analizados
+        context_parts.append(f"\n*Total de archivos analizados en caché: {len(analyses)}*")
+        context_parts.append("=== FIN DEL CONTEXTO ===\n")
+
+        return "\n".join(context_parts)

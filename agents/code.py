@@ -1,26 +1,29 @@
 """
 Agente Código - analiza código existente y determina qué cambios son necesarios.
-Usa modelo de visión (Q4) y no requiere memoria (operación one-shot).
+Usa modelo de visión (Q4) y ProjectMemory para cachear análisis entre sesiones.
 """
 from typing import Dict, Any, Optional, List
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
+from agents.memory import ProjectMemory
+
 
 class CodeAgent:
     """
     Agente especializado en análisis de código.
     Examina el código existente y planifica modificaciones necesarias.
-    No usa memoria - cada análisis es independiente.
+    Usa ProjectMemory para cachear análisis entre sesiones.
     """
 
-    def __init__(self, model_name: str = "qwen3-vl:8b"):
+    def __init__(self, model_name: str = "qwen3-vl:8b", memory_dir: str = None):
         """
         Inicializa el agente de código.
 
         Args:
             model_name: Modelo Ollama para análisis (preferiblemente Q4 cuantizado)
+            memory_dir: Directorio para la memoria persistente
         """
         self.model_name = model_name
         self.llm = ChatOllama(
@@ -28,6 +31,7 @@ class CodeAgent:
             temperature=0.2,
             num_ctx=16384  # Mayor contexto para código
         )
+        self.memory = ProjectMemory(memory_dir)
 
         self.system_prompt = """Eres un agente de análisis de código experto.
 
@@ -79,6 +83,22 @@ Devuelve tu análisis en secciones claras:
         Returns:
             Dict con el análisis y plan de cambios
         """
+        # Verificar si existe análisis en caché válido
+        cached = self.memory.get_file_analysis(filename, code_content)
+        if cached:
+            print(f"[CodeAgent] Usando análisis en caché para {filename}")
+            return {
+                "filename": filename,
+                "analysis": cached["analysis"],
+                "summary": cached["summary"],
+                "files_affected": cached["files_affected"],
+                "lines_to_modify": cached["lines_to_modify"],
+                "approach": cached["approach"],
+                "considerations": cached["considerations"],
+                "from_cache": True,
+                "success": True
+            }
+
         # Construir prompt de análisis
         context_parts = [
             f"ARCHIVO: {filename}",
@@ -114,7 +134,7 @@ Devuelve tu análisis en secciones claras:
             # Extraer información estructurada
             extracted_info = self._extract_structured_info(analysis)
 
-            return {
+            result = {
                 "filename": filename,
                 "analysis": analysis,
                 "summary": extracted_info.get("summary", ""),
@@ -122,8 +142,14 @@ Devuelve tu análisis en secciones claras:
                 "lines_to_modify": extracted_info.get("lines", []),
                 "approach": extracted_info.get("approach", ""),
                 "considerations": extracted_info.get("considerations", []),
+                "from_cache": False,
                 "success": True
             }
+
+            # Guardar en caché
+            self.memory.save_file_analysis(filename, code_content, result)
+
+            return result
         except Exception as e:
             print(f"[CodeAgent] Error analizando código: {e}")
             return {
