@@ -69,7 +69,7 @@ class AgentWorkflow:
         # Inicializar agentes
         self.coordinator = CoordinatorAgent(coordinator_model)
         self.vision = VisionAgent(vision_model, memory_dir)
-        self.code = CodeAgent(code_model)
+        self.code = CodeAgent(code_model, memory_dir)
         self.editor = EditorAgent(editor_model, memory_dir)
 
         # Construir el grafo
@@ -219,9 +219,12 @@ class AgentWorkflow:
         )
 
         state["code_analysis"] = result
-        state["tokens_used"]["code"] = len(str(result).split()) // 4  # Estimación aproximada
+        state["tokens_used"]["code"] = len(str(result).split()) // 4 if not result.get("from_cache") else 0
 
-        print(f"[Workflow] Código: análisis completado")
+        if result.get("from_cache"):
+            print("[Workflow] Código: usando análisis en caché")
+        else:
+            print(f"[Workflow] Código: análisis completado")
 
         return state
 
