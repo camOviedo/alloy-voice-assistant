@@ -42,6 +42,12 @@ DEFAULT_SCALE_DISPLAY = 0.5
 DEFAULT_MAX_WIDTH = 896
 DEFAULT_JPEG_QUALITY = 45
 
+# Configuración de captura de video para modo visión
+# Duración total de la captura en segundos
+VISION_CAPTURE_DURATION = 10  # segundos
+# Frames por segundo a capturar (cantidad de screenshots = DURATION × FPS)
+VISION_CAPTURE_FPS = 1  # 1 fps = 5 screenshots en 5 segundos
+
 # -------------------------------------------------------------------
 # Configuración de voz
 # -------------------------------------------------------------------

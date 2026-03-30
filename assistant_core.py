@@ -18,7 +18,7 @@ from file_manager import ProjectFileManager
 from llm_client import LLMClient
 from voice import VoiceManager
 from graph.workflow import AgentWorkflow
-from screen_capture import capture_single_screenshot
+from screen_capture import capture_single_screenshot, ScreenStream
 
 
 class Assistant:
@@ -59,7 +59,7 @@ class Assistant:
             editor_model=AGENT_EDITOR_MODEL,
         )
 
-    def answer(self, prompt, image_base64=None, image_path=None):
+    def answer(self, prompt, image_base64=None, image_path=None, image_paths=None):
         if not prompt or not prompt.strip():
             print("Prompt vacío, ignorando.")
             return
@@ -69,21 +69,56 @@ class Assistant:
         # Detectar si el prompt necesita análisis de imagen/visión
         needs_vision = self._needs_vision_analysis(prompt)
 
-        # Si detecta necesidad de visión, capturar imagen única
-        if needs_vision and not image_path:
-            print(f"👁️ Modo visión detectado en prompt - capturando imagen única...")
+        image_paths = []
+        
+        # Si detecta necesidad de visión, iniciar captura continua y capturar múltiples frames
+        if needs_vision:
+            print(f"👁️ Modo visión detectado - iniciando captura de video...")
             try:
-                image_base64, image_path = capture_single_screenshot()
-                if image_path:
-                    print(f"✅ Imagen capturada y guardada: {image_path}")
+                from config import (
+                    DEFAULT_MONITOR, DEFAULT_SCALE_DISPLAY, DEFAULT_MAX_WIDTH, DEFAULT_JPEG_QUALITY,
+                    VISION_CAPTURE_DURATION, VISION_CAPTURE_FPS
+                )
+                
+                # Calcular frames dinámicamente basado en tiempo × FPS
+                num_frames = int(VISION_CAPTURE_DURATION * VISION_CAPTURE_FPS)
+                delay_between_frames = VISION_CAPTURE_DURATION / max(num_frames - 1, 1) if num_frames > 1 else 0
+                
+                # Iniciar stream de captura continua
+                screen_stream = ScreenStream(
+                    monitor=DEFAULT_MONITOR,
+                    scale_display=DEFAULT_SCALE_DISPLAY,
+                    max_width=DEFAULT_MAX_WIDTH,
+                    jpeg_quality=DEFAULT_JPEG_QUALITY
+                ).start()
+                print("📹 Stream de captura iniciado - capturando frames...")
+                
+                # Esperar a que el stream tenga frames
+                time.sleep(0.5)
+                
+                # Capturar frames calculados dinámicamente (tiempo × FPS)
+                print(f"📹 Capturando {num_frames} frames en {VISION_CAPTURE_DURATION}s ({VISION_CAPTURE_FPS} fps)...")
+                for i in range(num_frames):
+                    b64, path = screen_stream.capture_and_save_frame()
+                    if path:
+                        image_paths.append(path)
+                        print(f"  📸 Frame {i+1}/{num_frames} capturado")
+                    if i < num_frames - 1:  # Esperar entre capturas (excepto después de la última)
+                        time.sleep(delay_between_frames)
+                
+                # DETENER el stream ANTES de que el VisionAgent analice
+                screen_stream.stop()
+                print(f"✅ Captura completada - {len(image_paths)} frames guardados")
+                print("🛑 Stream de video detenido (VisionAgent analizará desde disco)")
+                
             except Exception as e:
-                print(f"⚠️ Error capturando imagen: {e}")
-                image_base64 = None
-                image_path = None
+                print(f"⚠️ Error en captura: {e}")
+                import traceback
+                traceback.print_exc()
 
-        # Si no hay imagen, continuar en modo texto
-        if not image_base64 and not image_path:
-            print("📝 Modo texto (sin imagen) - ahorrando tokens")
+        # Si no hay imágenes, continuar en modo texto
+        if not image_paths:
+            print("📝 Modo texto (sin imágenes) - ahorrando tokens")
 
         print("Prompt:", prompt)
         prompt_lower = prompt.lower()
@@ -140,7 +175,7 @@ class Assistant:
         if any(cmd in prompt_lower for cmd in ["modifica", "modificar", "cambia", "cambiar", "update", "modify"]):
             filename = self._extract_filename(prompt)
             if filename:
-                self._handle_file_modification(prompt, filename, image_base64, image_path)
+                self._handle_file_modification(prompt, filename, image_base64, image_path, image_paths)
 
     def _needs_vision_analysis(self, prompt):
         """Detecta si el prompt requiere análisis de imagen/visión"""
@@ -336,7 +371,7 @@ class Assistant:
         self.llm.chat_history.append({"role": "assistant", "content": reply})
         self.voice.speak(reply[:150])
 
-    def _handle_file_modification(self, prompt, filename, image_base64=None, image_path=None):
+    def _handle_file_modification(self, prompt, filename, image_base64=None, image_path=None, image_paths=None):
         """Maneja solicitud de modificación de archivo usando workflow multi-agente"""
         content, error = self.file_manager.read_file(filename)
         if error:
@@ -352,6 +387,7 @@ class Assistant:
             prompt=prompt,
             image_b64=image_base64,
             image_path=image_path,
+            image_paths=image_paths,
             target_file=filename,
             file_content=content
         )

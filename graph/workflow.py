@@ -17,6 +17,7 @@ class AgentState(TypedDict):
     user_prompt: str
     image_b64: Optional[str]
     image_path: Optional[str]
+    image_paths: Optional[list]  # Lista de rutas a imágenes capturadas
     has_image: bool
 
     # Decisiones del coordinador
@@ -173,33 +174,66 @@ class AgentWorkflow:
         """Ejecuta el agente de visión."""
         image_b64 = state.get("image_b64")
         image_path = state.get("image_path")
+        image_paths = state.get("image_paths")
         
-        if not image_b64 and not image_path:
+        # Si hay múltiples imágenes, analizar todas
+        if image_paths and len(image_paths) > 0:
+            print(f"[Workflow] Ejecutando agente de visión sobre {len(image_paths)} imágenes...")
+            
+            all_analyses = []
+            total_tokens = 0
+            
+            for i, path in enumerate(image_paths):
+                print(f"[Workflow] Analizando imagen {i+1}/{len(image_paths)}: {path}")
+                result = self.vision.analyze_image(
+                    image_path=path,
+                    context_prompt=state["user_prompt"]
+                )
+                all_analyses.append(result.get("analysis", ""))
+                
+                # Acumular tokens
+                tokens = result.get("tokens_used", 0)
+                if isinstance(tokens, dict):
+                    total_tokens += tokens.get("image", 0) + tokens.get("output", 0)
+                elif not result.get("from_cache"):
+                    total_tokens += 1000
+            
+            # Combinar análisis
+            combined_analysis = "\n\n".join([
+                f"**Imagen {i+1}:**\n{analysis}" 
+                for i, analysis in enumerate(all_analyses) if analysis
+            ])
+            
+            state["vision_analysis"] = combined_analysis
+            state["tokens_used"]["vision"] = total_tokens
+            print(f"[Workflow] Visión: análisis de {len(image_paths)} imágenes completado ({total_tokens} tokens)")
+            
+        elif image_b64 or image_path:
+            # Análisis de imagen única (retrocompatibilidad)
+            print("[Workflow] Ejecutando agente de visión (imagen única)...")
+            
+            result = self.vision.analyze_image(
+                image_b64=image_b64,
+                image_path=image_path,
+                context_prompt=state["user_prompt"]
+            )
+            
+            state["vision_analysis"] = result.get("analysis", "")
+            
+            # Trackear tokens
+            tokens = result.get("tokens_used", 0)
+            if isinstance(tokens, dict):
+                state["tokens_used"]["vision"] = tokens.get("image", 0) + tokens.get("output", 0)
+            else:
+                state["tokens_used"]["vision"] = 0 if result.get("from_cache") else 1000
+            
+            if result.get("from_cache"):
+                print("[Workflow] Visión: usando resultado en caché")
+            else:
+                print(f"[Workflow] Visión: análisis completado ({state['tokens_used']['vision']} tokens)")
+        else:
             state["vision_analysis"] = None
-            return state
-
-        print("[Workflow] Ejecutando agente de visión...")
-
-        result = self.vision.analyze_image(
-            image_b64=image_b64,
-            image_path=image_path,
-            context_prompt=state["user_prompt"]
-        )
-
-        state["vision_analysis"] = result.get("analysis", "")
-
-        # Trackear tokens
-        tokens = result.get("tokens_used", 0)
-        if isinstance(tokens, dict):
-            state["tokens_used"]["vision"] = tokens.get("image", 0) + tokens.get("output", 0)
-        else:
-            state["tokens_used"]["vision"] = 0 if result.get("from_cache") else 1000
-
-        if result.get("from_cache"):
-            print("[Workflow] Visión: usando resultado en caché")
-        else:
-            print(f"[Workflow] Visión: análisis completado ({state['tokens_used']['vision']} tokens)")
-
+            
         return state
 
     def _route_from_vision(self, state: AgentState) -> str:
@@ -331,6 +365,7 @@ class AgentWorkflow:
         prompt: str,
         image_b64: Optional[str] = None,
         image_path: Optional[str] = None,
+        image_paths: Optional[list] = None,
         target_file: Optional[str] = None,
         file_content: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -341,6 +376,7 @@ class AgentWorkflow:
             prompt: Solicitud del usuario
             image_b64: Imagen en base64 (opcional)
             image_path: Ruta a imagen guardada (opcional)
+            image_paths: Lista de rutas a imágenes (opcional)
             target_file: Archivo objetivo para modificaciones (opcional)
             file_content: Contenido del archivo objetivo (opcional)
 
@@ -348,11 +384,18 @@ class AgentWorkflow:
             Dict con el resultado final
         """
         # Estado inicial
+        has_image = (
+            (image_b64 is not None and len(image_b64) > 100) or 
+            (image_path is not None) or
+            (image_paths is not None and len(image_paths) > 0)
+        )
+        
         initial_state: AgentState = {
             "user_prompt": prompt,
             "image_b64": image_b64,
             "image_path": image_path,
-            "has_image": (image_b64 is not None and len(image_b64) > 100) or (image_path is not None),
+            "image_paths": image_paths,
+            "has_image": has_image,
             "needs_vision": False,
             "needs_code_analysis": False,
             "needs_code_generation": False,

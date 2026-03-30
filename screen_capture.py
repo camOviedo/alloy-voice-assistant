@@ -171,6 +171,50 @@ class ScreenStream:
             frame = cv2.resize(frame, (new_w, new_h))
         return frame
 
+    def capture_and_save_frame(self, save_to_disk=True, captures_path=CAPTURES_PATH):
+        """
+        Captura el frame actual del stream y lo guarda en disco.
+        
+        Returns:
+            tuple: (image_base64, file_path) - imagen en base64 y ruta del archivo
+        """
+        with self.lock:
+            if self.frame is None:
+                return None, None
+            frame = self.frame.copy()
+        
+        h, w = frame.shape[:2]
+        
+        # Redimensionar si es necesario
+        if w > self.max_width:
+            scale = self.max_width / w
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            print(f"📸 Frame redimensionado: {w}x{h} → {new_w}x{new_h}")
+        
+        # Comprimir a JPEG
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
+        _, buffer = cv2.imencode(".jpeg", frame, encode_params)
+        image_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        est_tokens = int(len(image_base64) * 0.75)
+        print(f"📸 Frame capturado: {len(image_base64):,} chars (~{est_tokens:,} tokens)")
+        
+        file_path = None
+        if save_to_disk:
+            # Generar nombre de archivo con timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            filename = f"frame_{timestamp}.jpg"
+            file_path = os.path.join(captures_path, filename)
+            
+            # Guardar imagen
+            with open(file_path, 'wb') as f:
+                f.write(buffer)
+            print(f"💾 Frame guardado: {file_path}")
+        
+        return image_base64, file_path
+
     def stop(self):
         self.running = False
         if self.thread.is_alive():
