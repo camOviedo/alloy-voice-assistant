@@ -16,9 +16,9 @@ os.makedirs(SUGGESTIONS_PATH, exist_ok=True)
 # Configuración de agentes LangChain (multi-agente)
 # -------------------------------------------------------------------
 AGENT_COORDINATOR_MODEL = "qwen2.5:3b"  # Pequeño, rápido, texto-only
-AGENT_VISION_MODEL = "qwen3-vl:8b"     # Vision-capable
-AGENT_CODE_MODEL = "qwen3-vl:8b"       # Vision-capable
-AGENT_EDITOR_MODEL = "qwen3-vl:8b-extreme"  # Modelo principal
+AGENT_VISION_MODEL = "qwen3-vl:8b-vision"     # Vision-capable
+AGENT_CODE_MODEL = "qwen3-vl:8b-rapido"       # Vision-capable
+AGENT_EDITOR_MODEL = "qwen3-vl:8b-editor"  # Modelo principal
 
 # Cuantización recomendada:
 # - Vision: Q3 (más rápido)

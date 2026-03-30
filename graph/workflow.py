@@ -51,9 +51,9 @@ class AgentWorkflow:
     def __init__(
         self,
         coordinator_model: str = "qwen2.5:3b",
-        vision_model: str = "qwen3-vl:8b",
-        code_model: str = "qwen3-vl:8b",
-        editor_model: str = "qwen3-vl:8b",
+        vision_model: str = "qwen3-vl:8b-vision",
+        code_model: str = "qwen3-vl:8b-rapido",
+        editor_model: str = "qwen3-vl:8b-editor",
         memory_dir: str = None
     ):
         """
