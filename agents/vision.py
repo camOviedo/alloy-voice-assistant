@@ -28,7 +28,7 @@ class VisionAgent:
         self.model_name = model_name
         self.llm = ChatOllama(
             model=model_name,
-            temperature=0.3,
+            temperature=0.2,  # Consistente con Modelfile (precisión visual)
             num_ctx=8192  # Contexto moderado para visión
         )
         self.memory = VisionMemory(memory_dir)

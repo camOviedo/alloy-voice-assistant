@@ -26,6 +26,7 @@ class CoordinatorAgent:
         self.llm = ChatOllama(
             model=model_name,
             temperature=0.1,  # Baja temperatura para decisiones consistentes
+            num_ctx=4096,  # Contexto suficiente para coordinación
             format="json"
         )
 

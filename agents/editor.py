@@ -28,7 +28,7 @@ class EditorAgent:
         self.model_name = model_name
         self.llm = ChatOllama(
             model=model_name,
-            temperature=0.2,
+            temperature=0.3,
             num_ctx=32768  # Mayor contexto para archivos completos
         )
         self.memory = EditorMemory(memory_dir)
