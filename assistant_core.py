@@ -111,6 +111,17 @@ class Assistant:
                 print(f"✅ Captura completada - {len(image_paths)} frames guardados")
                 print("🛑 Stream de video detenido (VisionAgent analizará desde disco)")
                 
+                # PAUSA para permitir eliminar imágenes irrelevantes
+                if image_paths:
+                    print(f"\n⏸️  PAUSA DE REVISIÓN - {len(image_paths)} imágenes capturadas en: captures/")
+                    print("   Puedes eliminar las imágenes irrelevantes ahora.")
+                    print("   Presiona ENTER cuando estés listo para continuar...")
+                    try:
+                        input()
+                        print("▶️  Continuando con el análisis...\n")
+                    except (EOFError, KeyboardInterrupt):
+                        print("\n⚠️  Continuando sin esperar...")
+                
             except Exception as e:
                 print(f"⚠️ Error en captura: {e}")
                 import traceback
