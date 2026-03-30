@@ -8,9 +8,11 @@ import os
 # -------------------------------------------------------------------
 PROJECT_PATH = os.path.expanduser("~/Proyectos/reconocimiento_caballos")
 SUGGESTIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sugerencias_pendientes")
+CAPTURES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures")
 
-# Crear directorio para sugerencias pendientes
+# Crear directorios necesarios
 os.makedirs(SUGGESTIONS_PATH, exist_ok=True)
+os.makedirs(CAPTURES_PATH, exist_ok=True)
 
 # -------------------------------------------------------------------
 # Configuración de agentes LangChain (multi-agente)

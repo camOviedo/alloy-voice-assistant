@@ -2,7 +2,9 @@
 Punto de entrada principal del asistente de voz y visión.
 """
 import sys
+import threading
 import time
+from queue import Queue
 
 import cv2
 import mss
@@ -25,6 +27,10 @@ from screen_capture import ScreenStream
 assistant = None
 screen_stream = None
 vision_active = False
+
+# Variables para procesamiento asíncrono de prompts
+pending_result_queue = Queue()
+current_prompt_thread = None
 
 
 def start_vision():
@@ -73,14 +79,24 @@ def toggle_vision(enable):
 
 def audio_callback(recognizer, audio):
     """Se ejecuta cuando se detecta voz en el micrófono"""
-    global vision_active, screen_stream
+    global current_prompt_thread
     try:
         prompt = assistant.voice.transcribe(audio)
-        # Solo obtener imagen si la visión está activa
-        image_b64 = None
-        if vision_active and screen_stream:
-            image_b64 = screen_stream.read(encode=True)
-        assistant.answer(prompt, image_b64)
+        
+        # La captura de imagen se maneja internamente en assistant_core
+        # cuando se detectan palabras clave de visión
+        
+        # Ejecutar assistant.answer() en un hilo separado
+        def run_assistant():
+            try:
+                assistant.answer(prompt)
+                pending_result_queue.put(('done', None))
+            except Exception as e:
+                pending_result_queue.put(('error', str(e)))
+
+        current_prompt_thread = threading.Thread(target=run_assistant, daemon=True)
+        current_prompt_thread.start()
+        print("⏳ Procesando entrada de voz...")
     except sr.UnknownValueError:
         print("No se entendió el audio")
     except Exception as e:
@@ -102,33 +118,49 @@ def show_input_menu():
     print("Ingresa opción (1/2/v/q): ", end="", flush=True)
 
 
-def process_text_input():
-    """Procesa entrada por teclado"""
-    global vision_active, screen_stream
+def process_text_input_async():
+    """Procesa entrada por teclado de forma asíncrona (no bloqueante)"""
+    global current_prompt_thread
     try:
         prompt = input().strip()
         if prompt.lower() in ['q', 'salir', 'exit']:
-            return False
+            return False, None
         if prompt:
-            # Solo obtener imagen si la visión está activa
-            image_b64 = None
-            if vision_active and screen_stream:
-                image_b64 = screen_stream.read(encode=True)
-                if image_b64 is None:
-                    print("⚠️ Imagen no disponible, continuando sin visión...")
-            assistant.answer(prompt, image_b64)
-        return True
+            # La captura de imagen se maneja internamente en assistant_core
+            # cuando se detectan palabras clave de visión
+            
+            # Ejecutar assistant.answer() en un hilo separado
+            def run_assistant():
+                try:
+                    assistant.answer(prompt)
+                    pending_result_queue.put(('done', None))
+                except Exception as e:
+                    pending_result_queue.put(('error', str(e)))
+
+            current_prompt_thread = threading.Thread(target=run_assistant, daemon=True)
+            current_prompt_thread.start()
+            return True, 'processing'
+        return True, None
     except EOFError:
-        return False
+        return False, None
     except Exception as e:
         print(f"❌ Error procesando entrada: {e}")
-        return True
+        return True, None
+
+
+def process_pending_result():
+    """Procesa el resultado pendiente si está listo"""
+    try:
+        status, data = pending_result_queue.get_nowait()
+        return status, data
+    except:
+        return None, None
 
 
 def main():
     global assistant, screen_stream, vision_active
 
-    # Crear asistente (sin captura de pantalla inicial)
+    # Crear asistente (la captura de pantalla se maneja internamente)
     assistant = Assistant(
         model_name=DEFAULT_MODEL,
         language="es",
@@ -150,11 +182,13 @@ def main():
     print("   • 'aprueba cambio [ID]' - Aplicar cambio")
     print("   • 'rechaza cambio [ID]' - Descartar cambio")
     print("   • 'ver diferencias [ID]' - Ver diff del cambio")
-    print("   • 'activa vision [segundos]' - Activar modo visión temporalmente")
+    print("\n👁️ MODO VISIÓN:")
+    print("   La captura se activa AUTOMÁTICAMENTE cuando detectas")
+    print("   palabras como: 'pantalla', 'imagen', 'mira', 'video'...")
+    print("   • 'activa vision' - Activar captura continua manual")
     print("   • 'desactiva vision' - Desactivar modo visión")
+    print("   • 'v' en menú - Toggle visión continua")
     print("   • 'q' o ESC - Salir")
-    print("\n💡 La captura de pantalla NO está activa al inicio.")
-    print("   Presiona 'v' en el menú para activarla cuando la necesites.")
     print("="*60 + "\n")
 
     # Configurar reconocimiento de voz
@@ -221,8 +255,29 @@ def main():
                         toggle_voice_listening(False)
                         print("\n✏️ Escribe tu prompt y presiona ENTER:")
                         print("> ", end="", flush=True)
-                        if not process_text_input():
+                        should_continue, status = process_text_input_async()
+                        if not should_continue:
                             break
+                        # Si se está procesando un prompt, mantener bucle activo mostrando visión
+                        if status == 'processing':
+                            print("⏳ Procesando prompt... (presiona 'q' para salir)")
+                            processing = True
+                            while processing:
+                                # Mantener ventana de captura activa mientras procesa
+                                if vision_active and screen_stream:
+                                    frame_display = screen_stream.read_display()
+                                    if frame_display is not None:
+                                        cv2.imshow("Screen Capture", frame_display)
+                                key = cv2.waitKey(50) & 0xFF
+                                if key == ord('q') or key == 27:
+                                    break
+                                # Verificar si el procesamiento terminó
+                                result_status, _ = process_pending_result()
+                                if result_status is not None:
+                                    processing = False
+                                    if result_status == 'error':
+                                        print("❌ Error procesando prompt")
+                                time.sleep(0.05)
                     elif choice == '2':
                         print("\n🎤 Habla ahora... (la escucha está activa)")
                         print("   Presiona Ctrl+C o espera para volver al menú")

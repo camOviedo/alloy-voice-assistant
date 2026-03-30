@@ -16,6 +16,7 @@ class AgentState(TypedDict):
     # Input del usuario
     user_prompt: str
     image_b64: Optional[str]
+    image_path: Optional[str]
     has_image: bool
 
     # Decisiones del coordinador
@@ -170,14 +171,18 @@ class AgentWorkflow:
 
     def _run_vision(self, state: AgentState) -> AgentState:
         """Ejecuta el agente de visión."""
-        if not state["image_b64"]:
+        image_b64 = state.get("image_b64")
+        image_path = state.get("image_path")
+        
+        if not image_b64 and not image_path:
             state["vision_analysis"] = None
             return state
 
         print("[Workflow] Ejecutando agente de visión...")
 
         result = self.vision.analyze_image(
-            state["image_b64"],
+            image_b64=image_b64,
+            image_path=image_path,
             context_prompt=state["user_prompt"]
         )
 
@@ -325,6 +330,7 @@ class AgentWorkflow:
         self,
         prompt: str,
         image_b64: Optional[str] = None,
+        image_path: Optional[str] = None,
         target_file: Optional[str] = None,
         file_content: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -334,6 +340,7 @@ class AgentWorkflow:
         Args:
             prompt: Solicitud del usuario
             image_b64: Imagen en base64 (opcional)
+            image_path: Ruta a imagen guardada (opcional)
             target_file: Archivo objetivo para modificaciones (opcional)
             file_content: Contenido del archivo objetivo (opcional)
 
@@ -344,7 +351,8 @@ class AgentWorkflow:
         initial_state: AgentState = {
             "user_prompt": prompt,
             "image_b64": image_b64,
-            "has_image": image_b64 is not None and len(image_b64) > 100,
+            "image_path": image_path,
+            "has_image": (image_b64 is not None and len(image_b64) > 100) or (image_path is not None),
             "needs_vision": False,
             "needs_code_analysis": False,
             "needs_code_generation": False,

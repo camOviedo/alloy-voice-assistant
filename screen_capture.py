@@ -2,7 +2,9 @@
 Captura de pantalla en tiempo real usando mss.
 """
 import base64
+import os
 import time
+from datetime import datetime
 from threading import Lock, Thread
 
 import cv2
@@ -14,7 +16,73 @@ from config import (
     DEFAULT_MAX_WIDTH,
     DEFAULT_MONITOR,
     DEFAULT_SCALE_DISPLAY,
+    CAPTURES_PATH,
 )
+
+
+def capture_single_screenshot(
+    monitor=DEFAULT_MONITOR,
+    max_width=DEFAULT_MAX_WIDTH,
+    jpeg_quality=DEFAULT_JPEG_QUALITY,
+    save_to_disk=True,
+    captures_path=CAPTURES_PATH
+):
+    """
+    Captura una única screenshot y opcionalmente la guarda en disco.
+    
+    Args:
+        monitor: índice del monitor a capturar (1 = principal)
+        max_width: ancho máximo para redimensionar
+        jpeg_quality: calidad JPEG
+        save_to_disk: si True, guarda la imagen en disco
+        captures_path: ruta donde guardar la imagen
+        
+    Returns:
+        tuple: (image_base64, file_path) - imagen en base64 y ruta del archivo
+    """
+    with mss.mss() as sct:
+        # Verificar monitor válido
+        if monitor >= len(sct.monitors):
+            monitor = 1
+        
+        monitor_region = sct.monitors[monitor]
+        
+        # Capturar pantalla
+        screenshot = sct.grab(monitor_region)
+        img = np.array(screenshot)
+        frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        
+        h, w = frame.shape[:2]
+        
+        # Redimensionar si es necesario
+        if w > max_width:
+            scale = max_width / w
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            print(f"📸 Imagen redimensionada: {w}x{h} → {new_w}x{new_h}")
+        
+        # Comprimir a JPEG
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
+        _, buffer = cv2.imencode(".jpeg", frame, encode_params)
+        image_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        est_tokens = int(len(image_base64) * 0.75)
+        print(f"📸 Imagen capturada: {len(image_base64):,} chars (~{est_tokens:,} tokens)")
+        
+        file_path = None
+        if save_to_disk:
+            # Generar nombre de archivo con timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"screenshot_{timestamp}.jpg"
+            file_path = os.path.join(captures_path, filename)
+            
+            # Guardar imagen
+            with open(file_path, 'wb') as f:
+                f.write(buffer)
+            print(f"💾 Imagen guardada: {file_path}")
+        
+        return image_base64, file_path
 
 
 class ScreenStream:

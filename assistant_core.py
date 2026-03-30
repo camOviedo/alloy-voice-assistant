@@ -18,21 +18,28 @@ from file_manager import ProjectFileManager
 from llm_client import LLMClient
 from voice import VoiceManager
 from graph.workflow import AgentWorkflow
+from screen_capture import capture_single_screenshot
 
 
 class Assistant:
     def __init__(self, model_name=DEFAULT_MODEL, language=DEFAULT_LANGUAGE,
-                 project_path=None, vision_timeout=DEFAULT_VISION_TIMEOUT):
+                 project_path=None, vision_timeout=DEFAULT_VISION_TIMEOUT,
+                 vision_start_callback=None, vision_stop_callback=None):
         """
         model_name: modelo en Ollama (ej: "qwen2.5-vl:7b")
         language: idioma para Whisper y para el prompt del sistema (es, en, etc.)
         project_path: ruta al proyecto a modificar
         vision_timeout: segundos que dura el modo visión activado
+        vision_start_callback: función a llamar para iniciar captura de pantalla
+        vision_stop_callback: función a llamar para detener captura de pantalla
         """
         self.model_name = model_name
         self.language = language
         self.vision_timeout = vision_timeout
         self.vision_active_until = 0  # Timestamp cuando expira el modo visión
+        self.vision_start_callback = vision_start_callback
+        self.vision_stop_callback = vision_stop_callback
+        self.vision_get_image_callback = None  # Se establecerá desde main.py
 
         # Inicializar gestor de archivos del proyecto
         self.project_path = project_path or PROJECT_PATH
@@ -52,36 +59,30 @@ class Assistant:
             editor_model=AGENT_EDITOR_MODEL,
         )
 
-    def answer(self, prompt, image_base64=None):
+    def answer(self, prompt, image_base64=None, image_path=None):
         if not prompt or not prompt.strip():
             print("Prompt vacío, ignorando.")
             return
 
-        # Verificar si el modo visión ha expirado
         current_time = time.time()
 
         # Detectar si el prompt necesita análisis de imagen/visión
         needs_vision = self._needs_vision_analysis(prompt)
 
-        # Si detecta necesidad de visión, activar temporalmente
-        if needs_vision:
-            self.vision_active_until = current_time + self.vision_timeout
-            remaining = self.vision_timeout
-            print(f"👁️ Modo visión ACTIVADO por {remaining}s (detectado en prompt)")
+        # Si detecta necesidad de visión, capturar imagen única
+        if needs_vision and not image_path:
+            print(f"👁️ Modo visión detectado en prompt - capturando imagen única...")
+            try:
+                image_base64, image_path = capture_single_screenshot()
+                if image_path:
+                    print(f"✅ Imagen capturada y guardada: {image_path}")
+            except Exception as e:
+                print(f"⚠️ Error capturando imagen: {e}")
+                image_base64 = None
+                image_path = None
 
-        # Verificar si estamos en modo visión activo
-        vision_active = current_time <= self.vision_active_until
-
-        if vision_active and image_base64:
-            remaining = int(self.vision_active_until - current_time)
-            print(f"👁️ Modo visión activo - {remaining}s restantes")
-        elif vision_active and not image_base64:
-            print("⚠️ Modo visión activo pero imagen no disponible")
-            vision_active = False
-
-        # Si no está activo el modo visión, no usar imagen
-        if not vision_active:
-            image_base64 = None
+        # Si no hay imagen, continuar en modo texto
+        if not image_base64 and not image_path:
             print("📝 Modo texto (sin imagen) - ahorrando tokens")
 
         print("Prompt:", prompt)
@@ -139,14 +140,7 @@ class Assistant:
         if any(cmd in prompt_lower for cmd in ["modifica", "modificar", "cambia", "cambiar", "update", "modify"]):
             filename = self._extract_filename(prompt)
             if filename:
-                self._handle_file_modification(prompt, filename, image_base64)
-                return
-            else:
-                self._handle_file_modification_smart(prompt, image_base64)
-                return
-
-        # Si no coincide con ningún comando específico, usar respuesta normal del asistente
-        self._normal_response(prompt, image_base64)
+                self._handle_file_modification(prompt, filename, image_base64, image_path)
 
     def _needs_vision_analysis(self, prompt):
         """Detecta si el prompt requiere análisis de imagen/visión"""
@@ -166,6 +160,19 @@ class Assistant:
             if keyword in prompt_lower:
                 return True
         return False
+
+    def set_vision_get_image_callback(self, callback):
+        """Establece el callback para obtener imagen de la captura."""
+        self.vision_get_image_callback = callback
+
+    def _get_vision_image(self):
+        """Obtiene imagen del sistema de captura si está disponible."""
+        if self.vision_get_image_callback:
+            try:
+                return self.vision_get_image_callback()
+            except Exception as e:
+                print(f"⚠️ Error obteniendo imagen: {e}")
+        return None
 
     def _normal_response(self, prompt, image_base64):
         """Respuesta normal del asistente"""
@@ -329,7 +336,7 @@ class Assistant:
         self.llm.chat_history.append({"role": "assistant", "content": reply})
         self.voice.speak(reply[:150])
 
-    def _handle_file_modification(self, prompt, filename, image_base64):
+    def _handle_file_modification(self, prompt, filename, image_base64=None, image_path=None):
         """Maneja solicitud de modificación de archivo usando workflow multi-agente"""
         content, error = self.file_manager.read_file(filename)
         if error:
@@ -344,6 +351,7 @@ class Assistant:
         result = self.agent_workflow.run(
             prompt=prompt,
             image_b64=image_base64,
+            image_path=image_path,
             target_file=filename,
             file_content=content
         )

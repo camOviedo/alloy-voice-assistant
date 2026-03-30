@@ -3,6 +3,7 @@ Agente Vision - analiza imágenes y extrae información relevante.
 Usa modelo de visión cuantizado (Q3) y memoria caché.
 """
 import base64
+import os
 from typing import Dict, Any, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -68,17 +69,48 @@ REGLAS:
         """Computa un hash simple de la imagen para caché."""
         return self.memory.compute_hash(image_b64[:1000])  # Usar primeros 1000 chars para velocidad
 
-    def analyze_image(self, image_b64: str, context_prompt: str = None) -> Dict[str, Any]:
+    def _load_image_from_file(self, image_path: str) -> str:
+        """Carga una imagen desde archivo y la codifica en base64."""
+        with open(image_path, 'rb') as f:
+            image_bytes = f.read()
+        return base64.b64encode(image_bytes).decode('utf-8')
+
+    def analyze_image(self, image_b64: str = None, image_path: str = None, context_prompt: str = None) -> Dict[str, Any]:
         """
         Analiza una imagen y extrae información relevante.
 
         Args:
-            image_b64: Imagen en base64
+            image_b64: Imagen en base64 (opcional)
+            image_path: Ruta a imagen en disco (opcional)
             context_prompt: Contexto adicional sobre qué buscar
 
         Returns:
             Dict con el análisis y metadatos
         """
+        # Si se proporciona image_path, cargar la imagen
+        if image_path and not image_b64:
+            if os.path.exists(image_path):
+                print(f"[VisionAgent] Cargando imagen desde: {image_path}")
+                image_b64 = self._load_image_from_file(image_path)
+            else:
+                print(f"[VisionAgent] Archivo no encontrado: {image_path}")
+                return {
+                    "analysis": f"Error: Archivo de imagen no encontrado: {image_path}",
+                    "from_cache": False,
+                    "image_hash": "",
+                    "tokens_used": 0,
+                    "error": "File not found"
+                }
+
+        if not image_b64:
+            return {
+                "analysis": "Error: No se proporcionó imagen para analizar",
+                "from_cache": False,
+                "image_hash": "",
+                "tokens_used": 0,
+                "error": "No image provided"
+            }
+
         # Verificar caché
         image_hash = self._compute_image_hash(image_b64)
         cached = self.memory.get_cached_analysis(image_hash)
