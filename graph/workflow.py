@@ -54,8 +54,8 @@ class AgentWorkflow:
         self,
         coordinator_model: str = "qwen2.5:3b",
         vision_model: str = "qwen3-vl:8b-vision",
-        code_model: str = "qwen3-vl:8b-rapido",
-        editor_model: str = "qwen3-vl:8b-editor",
+        code_model: str = "qwen3-coder-30b",
+        editor_model: str = "qwen3-coder-30b",
         memory_dir: str = None
     ):
         """
@@ -163,10 +163,13 @@ class AgentWorkflow:
             return "direct"
         elif state["needs_vision"]:
             return "vision"
-        elif state["needs_code_generation"]:
-            return "editor"
         elif state["needs_code_analysis"]:
+            # El análisis de código debe ir primero; si también necesita generación,
+            # el flujo irá a editor después del análisis vía _route_from_code
             return "code"
+        elif state["needs_code_generation"]:
+            # Solo generación sin análisis previo (raro pero posible)
+            return "editor"
         else:
             return "direct"
 
