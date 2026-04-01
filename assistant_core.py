@@ -485,13 +485,24 @@ class Assistant:
             self._handle_file_modification_legacy(prompt, filename, image_base64, content)
             return
 
-        # Mostrar métricas del workflow
-        total_tokens = sum((result.get("tokens_used") or {}).values())
+        # Mostrar métricas del workflow con desglose por agente
+        tokens_used = result.get("tokens_used") or {}
         execution_path = result.get("execution_path") or []
-
+        total_tokens = sum(tokens_used.values())
+        
+        # Contexto disponible (basado en los modelos utilizados)
+        CONTEXT_WINDOW = 262144  # qwen3 models: 262144 tokens
+        available_tokens = CONTEXT_WINDOW - total_tokens
+        
         print(f"\n📊 Workflow completado:")
         print(f"   - Camino: {' -> '.join(execution_path)}")
-        print(f"   - Tokens usados: ~{total_tokens}")
+        print(f"\n   📈 Tokens consumidos por agente:")
+        for agent, tokens in sorted(tokens_used.items()):
+            percentage = (tokens / CONTEXT_WINDOW) * 100
+            print(f"      • {agent:12}: {tokens:>8,} tokens ({percentage:>5.2f}%)")
+        print(f"   ─────────────────────────────────")
+        print(f"      • {'TOTAL':12}: {total_tokens:>8,} tokens ({(total_tokens/CONTEXT_WINDOW)*100:.2f}%)")
+        print(f"\n   💾 Disponible: {available_tokens:,} tokens / {CONTEXT_WINDOW:,} ({(available_tokens/CONTEXT_WINDOW)*100:.1f}% libre)")
 
         # Procesar resultado del editor
         editor_result = result.get("editor_result")
@@ -509,10 +520,16 @@ class Assistant:
 
             if success:
                 change_id = proposal_result
+            
+                # Formatear desglose de tokens para la respuesta
+                tokens_breakdown = "\n".join([f"   • {agent}: {tokens:,} tokens" for agent, tokens in sorted(tokens_used.items())])
+                
                 assistant_reply = (
                     f"✅ He analizado y modificado `{filename}` usando el workflow multi-agente.\n\n"
                     f"📊 Camino de ejecución: {' -> '.join(execution_path)}\n"
-                    f"💾 Tokens optimizados: ~{total_tokens} (usando modelos especializados)\n\n"
+                    f"📈 Tokens consumidos:\n{tokens_breakdown}\n"
+                    f"   ──────────────────\n"
+                    f"   • Total: {total_tokens:,} / 262,144 disponibles ({(total_tokens/262144)*100:.1f}%)\n\n"
                     f"⏳ **Cambio propuesto guardado como: `{change_id}`**"
                 )
 
@@ -525,7 +542,10 @@ class Assistant:
             else:
                 assistant_reply = f"❌ Error guardando propuesta: {proposal_result}"
         elif editor_result:
-            assistant_reply = f"❌ El agente editor no pudo generar código: {editor_result.get('error', 'Error desconocido')}"
+            assistant_reply = f"❌ El agente editor no pudo generar código: {editor_result.get('error', 'Error desconocido')}\n\n"
+            # Añadir info de tokens aunque falle
+            tokens_breakdown = "\n".join([f"   • {agent}: {tokens:,} tokens" for agent, tokens in sorted(tokens_used.items())])
+            assistant_reply += f"📈 Tokens consumidos antes del error:\n{tokens_breakdown}\n   • Total: {total_tokens:,} tokens"
         elif result.get("code_analysis"):
             # Mostrar análisis del CodeAgent cuando no hay código generado
             code_analysis = result["code_analysis"]
@@ -539,8 +559,12 @@ class Assistant:
             if len(analysis_text) > 1500:
                 assistant_reply += f"\n\n... (análisis truncado, total: {len(analysis_text)} caracteres)"
             
+            # Añadir desglose detallado de tokens
+            tokens_breakdown = "\n".join([f"   • {agent}: {tokens:,} tokens" for agent, tokens in sorted(tokens_used.items())])
             assistant_reply += f"\n\n📊 Camino de ejecución: {' -> '.join(execution_path)}"
-            assistant_reply += f"\n💾 Tokens usados: ~{total_tokens}"
+            assistant_reply += f"\n📈 Tokens consumidos:\n{tokens_breakdown}"
+            assistant_reply += f"\n   ──────────────────"
+            assistant_reply += f"\n   • Total: {total_tokens:,} / 262,144 disponibles ({(total_tokens/262144)*100:.1f}%)"
             
             print("Response:", assistant_reply)
             self.llm.chat_history.append({"role": "user", "content": prompt})
