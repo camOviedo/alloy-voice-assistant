@@ -71,61 +71,55 @@ class Assistant:
 
         image_paths = []
         
-        # Si detecta necesidad de visión, iniciar captura continua y capturar múltiples frames
+        # Si detecta necesidad de visión, preguntar por fuente de imágenes
         if needs_vision:
-            print(f"👁️ Modo visión detectado - iniciando captura de video...")
-            try:
-                from config import (
-                    DEFAULT_MONITOR, DEFAULT_SCALE_DISPLAY, DEFAULT_MAX_WIDTH, DEFAULT_JPEG_QUALITY,
-                    VISION_CAPTURE_DURATION, VISION_CAPTURE_FPS
-                )
+            print(f"👁️ Modo visión detectado")
+            
+            # Verificar si hay imágenes existentes en captures/
+            existing_images = self._get_existing_capture_images()
+            
+            if existing_images:
+                # Mostrar menú de opciones
+                print(f"\n📁 Se encontraron {len(existing_images)} imágenes en captures/")
+                print("\n" + "="*50)
+                print("   ¿Qué deseas hacer?")
+                print("="*50)
+                print("   [1] 📂 Usar imágenes existentes en carpeta")
+                print("   [2] 📷 Hacer nuevas capturas de pantalla")
+                print("="*50)
+                print("   Ingresa número (1-2): ", end="", flush=True)
                 
-                # Calcular frames dinámicamente basado en tiempo × FPS
-                num_frames = int(VISION_CAPTURE_DURATION * VISION_CAPTURE_FPS)
-                delay_between_frames = VISION_CAPTURE_DURATION / max(num_frames - 1, 1) if num_frames > 1 else 0
-                
-                # Iniciar stream de captura continua
-                screen_stream = ScreenStream(
-                    monitor=DEFAULT_MONITOR,
-                    scale_display=DEFAULT_SCALE_DISPLAY,
-                    max_width=DEFAULT_MAX_WIDTH,
-                    jpeg_quality=DEFAULT_JPEG_QUALITY
-                ).start()
-                print("📹 Stream de captura iniciado - capturando frames...")
-                
-                # Esperar a que el stream tenga frames
-                time.sleep(0.5)
-                
-                # Capturar frames calculados dinámicamente (tiempo × FPS)
-                print(f"📹 Capturando {num_frames} frames en {VISION_CAPTURE_DURATION}s ({VISION_CAPTURE_FPS} fps)...")
-                for i in range(num_frames):
-                    b64, path = screen_stream.capture_and_save_frame()
-                    if path:
-                        image_paths.append(path)
-                        print(f"  📸 Frame {i+1}/{num_frames} capturado")
-                    if i < num_frames - 1:  # Esperar entre capturas (excepto después de la última)
-                        time.sleep(delay_between_frames)
-                
-                # DETENER el stream ANTES de que el VisionAgent analice
-                screen_stream.stop()
-                print(f"✅ Captura completada - {len(image_paths)} frames guardados")
-                print("🛑 Stream de video detenido (VisionAgent analizará desde disco)")
-                
-                # PAUSA para permitir eliminar imágenes irrelevantes
-                if image_paths:
-                    print(f"\n⏸️  PAUSA DE REVISIÓN - {len(image_paths)} imágenes capturadas en: captures/")
-                    print("   Puedes eliminar las imágenes irrelevantes ahora.")
-                    print("   Presiona ENTER cuando estés listo para continuar...")
-                    try:
-                        input()
-                        print("▶️  Continuando con el análisis...\n")
-                    except (EOFError, KeyboardInterrupt):
-                        print("\n⚠️  Continuando sin esperar...")
-                
-            except Exception as e:
-                print(f"⚠️ Error en captura: {e}")
-                import traceback
-                traceback.print_exc()
+                try:
+                    choice = input().strip()
+                    
+                    if choice == "1":
+                        image_paths = existing_images
+                        print(f"\n✅ Usando {len(image_paths)} imágenes existentes")
+                        
+                        # Pausa para revisión antes de análisis
+                        print("\n⏸️  PAUSA DE REVISIÓN")
+                        print("   Puedes eliminar las imágenes irrelevantes de captures/")
+                        print("   Presiona ENTER cuando estés listo para continuar...")
+                        try:
+                            input()
+                            print("▶️  Continuando con el análisis...\n")
+                        except (EOFError, KeyboardInterrupt):
+                            print("\n⚠️  Continuando sin esperar...")
+                            
+                    elif choice == "2":
+                        print("\n📷 Iniciando nuevas capturas...")
+                        image_paths = self._capture_new_images()
+                    else:
+                        print("\n⚠️ Opción no válida. Usando imágenes existentes.")
+                        image_paths = existing_images
+                        
+                except (EOFError, KeyboardInterrupt):
+                    print("\n⚠️ Entrada cancelada. Usando imágenes existentes.")
+                    image_paths = existing_images
+            else:
+                # No hay imágenes existentes, hacer capturas nuevas
+                print(f"\n📷 No hay imágenes en captures/. Iniciando captura...")
+                image_paths = self._capture_new_images()
 
         # Si no hay imágenes, continuar en modo texto
         if not image_paths:
@@ -187,6 +181,88 @@ class Assistant:
             filename = self._extract_filename(prompt)
             if filename:
                 self._handle_file_modification(prompt, filename, image_base64, image_path, image_paths)
+
+    def _get_existing_capture_images(self):
+        """Obtiene lista de imágenes existentes en la carpeta captures/"""
+        try:
+            from config import CAPTURES_PATH
+            import os
+            
+            if not os.path.exists(CAPTURES_PATH):
+                return []
+            
+            # Extensiones de imagen soportadas
+            valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+            
+            images = []
+            for file in sorted(os.listdir(CAPTURES_PATH)):
+                if file.lower().endswith(valid_extensions):
+                    full_path = os.path.join(CAPTURES_PATH, file)
+                    images.append(full_path)
+            
+            return images
+        except Exception as e:
+            print(f"⚠️ Error buscando imágenes existentes: {e}")
+            return []
+
+    def _capture_new_images(self):
+        """Realiza nueva captura de imágenes y retorna lista de paths"""
+        image_paths = []
+        
+        try:
+            from config import (
+                DEFAULT_MONITOR, DEFAULT_SCALE_DISPLAY, DEFAULT_MAX_WIDTH, DEFAULT_JPEG_QUALITY,
+                VISION_CAPTURE_DURATION, VISION_CAPTURE_FPS
+            )
+            
+            # Calcular frames dinámicamente basado en tiempo × FPS
+            num_frames = int(VISION_CAPTURE_DURATION * VISION_CAPTURE_FPS)
+            delay_between_frames = VISION_CAPTURE_DURATION / max(num_frames - 1, 1) if num_frames > 1 else 0
+            
+            # Iniciar stream de captura continua
+            screen_stream = ScreenStream(
+                monitor=DEFAULT_MONITOR,
+                scale_display=DEFAULT_SCALE_DISPLAY,
+                max_width=DEFAULT_MAX_WIDTH,
+                jpeg_quality=DEFAULT_JPEG_QUALITY
+            ).start()
+            print("📹 Stream de captura iniciado - capturando frames...")
+            
+            # Esperar a que el stream tenga frames
+            time.sleep(0.5)
+            
+            # Capturar frames calculados dinámicamente (tiempo × FPS)
+            print(f"📹 Capturando {num_frames} frames en {VISION_CAPTURE_DURATION}s ({VISION_CAPTURE_FPS} fps)...")
+            for i in range(num_frames):
+                b64, path = screen_stream.capture_and_save_frame()
+                if path:
+                    image_paths.append(path)
+                    print(f"  📸 Frame {i+1}/{num_frames} capturado")
+                if i < num_frames - 1:
+                    time.sleep(delay_between_frames)
+            
+            # DETENER el stream
+            screen_stream.stop()
+            print(f"✅ Captura completada - {len(image_paths)} frames guardados")
+            print("🛑 Stream de video detenido")
+            
+            # PAUSA para permitir eliminar imágenes irrelevantes
+            if image_paths:
+                print(f"\n⏸️  PAUSA DE REVISIÓN - {len(image_paths)} imágenes capturadas en: captures/")
+                print("   Puedes eliminar las imágenes irrelevantes ahora.")
+                print("   Presiona ENTER cuando estés listo para continuar...")
+                try:
+                    input()
+                    print("▶️  Continuando con el análisis...\n")
+                except (EOFError, KeyboardInterrupt):
+                    print("\n⚠️  Continuando sin esperar...")
+                    
+        except Exception as e:
+            print(f"⚠️ Error en captura: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return image_paths
 
     def _needs_vision_analysis(self, prompt):
         """Detecta si el prompt requiere análisis de imagen/visión"""
