@@ -19,8 +19,8 @@ os.makedirs(CAPTURES_PATH, exist_ok=True)
 # -------------------------------------------------------------------
 AGENT_COORDINATOR_MODEL = "qwen2.5:3b"  # Pequeño, rápido, texto-only
 AGENT_VISION_MODEL = "qwen3-vl:8b-vision"     # Vision-capable
-AGENT_CODE_MODEL = "qwen3-vl:8b-rapido"       # Vision-capable
-AGENT_EDITOR_MODEL = "qwen3-vl:8b-editor"  # Modelo principal
+AGENT_CODE_MODEL = "qwen2.5-coder:14b"       # Analisis de codigo
+AGENT_EDITOR_MODEL = "qwen2.5-coder:14b"  # Generacion de codigo
 
 # Cuantización recomendada:
 # - Vision: Q3 (más rápido)
@@ -44,9 +44,9 @@ DEFAULT_JPEG_QUALITY = 45
 
 # Configuración de captura de video para modo visión
 # Duración total de la captura en segundos
-VISION_CAPTURE_DURATION = 10  # segundos
+VISION_CAPTURE_DURATION = 20  # segundos
 # Frames por segundo a capturar (cantidad de screenshots = DURATION × FPS)
-VISION_CAPTURE_FPS = 1  # 1 fps = 5 screenshots en 5 segundos
+VISION_CAPTURE_FPS = 1  # 1 fps = 20 screenshots en 20 segundos
 
 # -------------------------------------------------------------------
 # Configuración de voz

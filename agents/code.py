@@ -29,7 +29,10 @@ class CodeAgent:
         self.llm = ChatOllama(
             model=model_name,
             temperature=0.2,
-            num_ctx=16384  # Mayor contexto para código
+            top_p=0.85,
+            num_ctx=12288,  # Mayor contexto para código
+            num_predict=8192,
+            repeat_penalty=1.05
         )
         self.memory = ProjectMemory(memory_dir)
 
