@@ -277,6 +277,9 @@ def main():
                                     processing = False
                                     if result_status == 'error':
                                         print("❌ Error procesando prompt")
+                                    # Esperar a que el hilo termine completamente antes de continuar
+                                    if current_prompt_thread and current_prompt_thread.is_alive():
+                                        current_prompt_thread.join(timeout=1.0)
                                 time.sleep(0.05)
                     elif choice == '2':
                         print("\n🎤 Habla ahora... (la escucha está activa)")

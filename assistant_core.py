@@ -177,7 +177,7 @@ class Assistant:
             self.voice.speak("Modo visión desactivado")
             return
 
-        if any(cmd in prompt_lower for cmd in ["modifica", "modificar", "cambia", "cambiar", "update", "modify"]):
+        if any(cmd in prompt_lower for cmd in ["modifica", "modificar", "cambia", "cambiar", "update", "modify", "aplica", "aplicar", "ajusta", "ajustar", "corrige", "corregir", "actualiza", "actualizar"]):
             filename = self._extract_filename(prompt)
             if filename:
                 self._handle_file_modification(prompt, filename, image_base64, image_path, image_paths)
