@@ -40,25 +40,30 @@ DECISIONES POSIBLES:
 3. "code_generation": true/false - ¿Necesita generar/modificar código?
 4. "direct_response": true/false - ¿Es una pregunta simple que no requiere agentes?
 
-REGLAS:
+REGLAS DETALLADAS:
 - "vision": true SOLO si el prompt menciona explícitamente imágenes, pantalla, screenshot, "qué ves", "muestra", etc.
-- "code_analysis": true si menciona archivos, código, modificar, cambiar, actualizar, fix, bug
-- "code_generation": true si pide crear, modificar, actualizar, implementar código
-- "direct_response": true para preguntas simples, saludos, o consultas generales
+- "code_analysis": true si menciona archivos, código, modificar, cambiar, actualizar, fix, bug, error, importaciones
+- "code_generation": true SIEMPRE que el usuario pida: corregir, modificar, cambiar, actualizar, implementar, crear, añadir, eliminar, arreglar, reparar, solucionar CÓDIGO
+- "direct_response": true para preguntas simples, saludos, o consultas generales SIN código
+
+REGLA CRÍTICA:
+Si el usuario dice "corrigelo", "modificalo", "cambialo", "arreglalo", "solucionalo" o similares en referencia a código:
+- "code_analysis": true
+- "code_generation": true (OBLIGATORIO - el editor debe ejecutarse para hacer los cambios)
+
+Ejemplo 1 - Solicitud de corrección (DEBE generar código):
+Usuario: "hay un error en tracker.py, corrige las importaciones"
+Salida: {"vision": false, "code_analysis": true, "code_generation": true, "direct_response": false, "reasoning": "El usuario reporta un error y pide corrección, requiere análisis y generación de código modificado"}
+
+Ejemplo 2 - Solo análisis (NO generar código):
+Usuario: "explica qué hace este archivo"
+Salida: {"vision": false, "code_analysis": true, "code_generation": false, "direct_response": false, "reasoning": "El usuario solo pide explicación, no modificación"}
 
 IMPORTANTE:
 - Devuelve SIEMPRE un JSON válido
 - NO agregues texto explicativo fuera del JSON
 - Usa true/false (minúsculas, sin comillas)
-
-Ejemplo de salida correcta:
-{
-  "vision": true,
-  "code_analysis": true,
-  "code_generation": true,
-  "direct_response": false,
-  "reasoning": "El usuario quiere modificar código basado en un error visible en pantalla"
-}"""
+- Cuando el usuario pida CORREGIR/ARREGLAR/MODIFICAR código, code_generation DEBE ser true"""
 
     def analyze_request(self, prompt: str, has_image: bool = False) -> Dict[str, Any]:
         """
@@ -133,17 +138,30 @@ Ejemplo de salida correcta:
         ]
         needs_code = any(kw in prompt_lower for kw in code_keywords)
 
+        # Keywords específicas para generación/corrección de código
+        generation_keywords = [
+            "corrige", "corrigelo", "corregir", "soluciona", "solucionalo",
+            "arregla", "arreglalo", "repara", "reparar", "haz", "genera",
+            "escribe", "escribir", "añade", "agrega", "quita", "elimina",
+            "borra", "modifica esto", "cambia esto"
+        ]
+        needs_generation = any(kw in prompt_lower for kw in generation_keywords)
+
+        # Si pide corregir errores, forzar ambos análisis y generación
+        if needs_generation:
+            needs_code = True
+
         # Detectar si es una pregunta simple/directa
         simple_keywords = [
             "hola", "hello", "buenos días", "buenas", "qué tal", "cómo estás",
             "gracias", "adiós", "bye", "qué es", "cómo", "dime"
         ]
-        is_simple = any(kw in prompt_lower for kw in simple_keywords) and not needs_code
+        is_simple = any(kw in prompt_lower for kw in simple_keywords) and not needs_code and not needs_generation
 
         return {
             "vision": needs_vision,
             "code_analysis": needs_code,
-            "code_generation": needs_code,
+            "code_generation": needs_generation or needs_code,  # Si necesita código, probablemente también generación
             "direct_response": is_simple,
             "reasoning": "Análisis heurístico de fallback (LLM no disponible)"
         }
