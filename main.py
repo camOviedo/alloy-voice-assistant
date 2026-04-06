@@ -118,17 +118,73 @@ def show_input_menu():
     print("Ingresa opción (1/2/v/q): ", end="", flush=True)
 
 
+def drain_stdin(timeout=1.0):
+    """Drena todo el contenido residual de stdin usando múltiples métodos"""
+    import select
+    import time
+    import sys
+    import termios
+    
+    # Método 1: Intentar limpiar buffer del terminal con TCIFLUSH
+    try:
+        # Obtener atributos del terminal
+        fd = sys.stdin.fileno()
+        old_attr = termios.tcgetattr(fd)
+        # Limpiar buffer de entrada del terminal
+        termios.tcflush(fd, termios.TCIFLUSH)
+    except:
+        pass
+    
+    # Método 2: Leer todo lo disponible con select
+    start_time = time.time()
+    last_data_time = start_time
+    while (time.time() - start_time) < timeout:
+        ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+        if ready:
+            try:
+                # Leer en chunks más grandes
+                chunk = sys.stdin.read(4096)
+                if chunk:
+                    last_data_time = time.time()
+                else:
+                    if (time.time() - last_data_time) > 0.2:
+                        break
+            except:
+                break
+        else:
+            if (time.time() - last_data_time) > 0.2:
+                break
+        time.sleep(0.01)
+
+
 def process_text_input_async():
     """Procesa entrada por teclado de forma asíncrona (no bloqueante)"""
     global current_prompt_thread
+    import select
     try:
         prompt = input().strip()
+        # Leer líneas adicionales si están disponibles (para pegar textos multilinea)
+        # Usar timeout más largo para asegurar que todo el pegado se complete
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], 0.2)
+            if ready:
+                extra_line = sys.stdin.readline()
+                if extra_line:
+                    prompt += "\n" + extra_line.rstrip('\n')
+                else:
+                    break
+            else:
+                break
+
+        # Drenar cualquier contenido residual
+        drain_stdin(timeout=1.0)
+
         if prompt.lower() in ['q', 'salir', 'exit']:
             return False, None
         if prompt:
             # La captura de imagen se maneja internamente en assistant_core
             # cuando se detectan palabras clave de visión
-            
+
             # Ejecutar assistant.answer() en un hilo separado
             def run_assistant():
                 try:
@@ -280,6 +336,8 @@ def main():
                                     # Esperar a que el hilo termine completamente antes de continuar
                                     if current_prompt_thread and current_prompt_thread.is_alive():
                                         current_prompt_thread.join(timeout=1.0)
+                                    # Drenar cualquier contenido residual del buffer antes de volver al menú
+                                    drain_stdin(timeout=1.0)
                                 time.sleep(0.05)
                     elif choice == '2':
                         print("\n🎤 Habla ahora... (la escucha está activa)")
