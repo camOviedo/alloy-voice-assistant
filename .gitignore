@@ -3,3 +3,6 @@
 __pycache__/*
 agents/__pycache__/*
 graph/__pycache__/*
+/sugerencias_pendientes
+/captures
+/tools/__pycache__
