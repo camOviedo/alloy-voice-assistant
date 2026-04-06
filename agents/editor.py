@@ -28,9 +28,9 @@ class EditorAgent:
         self.model_name = model_name
         self.llm = ChatOllama(
             model=model_name,
-            temperature=0.4,
+            temperature=0.6,
             num_ctx=65536,  # Mayor contexto para archivos completos
-            num_predict=24576,
+            num_predict=32768,
             repeat_penalty=1.1,
             top_p=0.9
         )
@@ -48,6 +48,9 @@ REGLAS ABSOLUTAS - OBLIGATORIAS:
 4. NO hagas resúmenes del código faltante
 5. El código debe estar en UN SOLO bloque markdown ```python ... ```
 6. Explica los cambios DESPUÉS del bloque de código, no antes
+7. DEBES hacer cambios REALES al código - no devuelvas el código sin modificar
+8. Si la solicitud implica añadir nueva funcionalidad, implementa métodos/clases nuevas
+9. Si la solicitud implica modificar comportamiento, cambia la lógica existente
 
 FORMATO DE RESPUESTA CORRECTO:
 ```python
@@ -59,7 +62,7 @@ FORMATO DE RESPUESTA CORRECTO:
 **Resumen de cambios:**
 - Lista breve de modificaciones realizadas
 
-ADVERTENCIA: Si devuelves solo un fragmento, el sistema RECHAZARÁ automáticamente tu respuesta y se perderá el trabajo."""
+ADVERTENCIA CRÍTICA: Si devuelves el código sin cambios (idéntico al original), el sistema RECHAZARÁ automáticamente tu respuesta y se perderá el trabajo. DEBES implementar las modificaciones solicitadas."""
 
     def generate_modified_code(
         self,
@@ -157,6 +160,24 @@ ADVERTENCIA: Si devuelves solo un fragmento, el sistema RECHAZARÁ automáticame
                             "original_lines": original_lines,
                             "new_lines": new_lines,
                             "ratio": new_lines / original_lines if original_lines > 0 else 0
+                        }
+                    }
+
+                # Validar que NO sea idéntico al original
+                if proposed_code.strip() == original_code.strip():
+                    print(f"[EditorAgent] ⚠️ ADVERTENCIA: El código generado es IDÉNTICO al original")
+                    print(f"[EditorAgent]    El LLM no realizó ninguna modificación")
+                    return {
+                        "filename": filename,
+                        "code": proposed_code,
+                        "full_response": full_response,
+                        "success": False,
+                        "error": "El código generado es idéntico al original - no se realizaron modificaciones. El LLM no siguió las instrucciones.",
+                        "validation": {
+                            "original_lines": original_lines,
+                            "new_lines": new_lines,
+                            "ratio": 1.0,
+                            "identical": True
                         }
                     }
 
@@ -258,6 +279,66 @@ ADVERTENCIA: Si devuelves solo un fragmento, el sistema RECHAZARÁ automáticame
                 "success": False,
                 "error": str(e)
             }
+
+    def generate_multiple_modifications(
+        self,
+        files_content: Dict[str, str],
+        user_request: str,
+        code_analysis: str = None,
+        primary_file: str = None
+    ) -> Dict[str, Any]:
+        """
+        Genera modificaciones para múltiples archivos.
+
+        Args:
+            files_content: Dict {ruta: contenido} de archivos a modificar
+            user_request: Solicitud del usuario
+            code_analysis: Análisis previo del CodeAgent
+            primary_file: Archivo principal que debe enfocarse primero
+
+        Returns:
+            Dict con código generado para cada archivo
+        """
+        if not files_content:
+            return {"success": False, "error": "No hay archivos para modificar"}
+
+        results = {}
+        files_list = list(files_content.items())
+
+        # Si hay archivo primario, procesarlo primero
+        if primary_file and primary_file in files_content:
+            files_list = [(primary_file, files_content[primary_file])] + [
+                (f, c) for f, c in files_list if f != primary_file
+            ]
+
+        for filename, content in files_list:
+            print(f"[EditorAgent] Generando código para {filename}...")
+
+            result = self.generate_modified_code(
+                filename=filename,
+                original_code=content,
+                user_request=user_request,
+                code_analysis=code_analysis
+            )
+
+            results[filename] = result
+
+            if not result.get("success"):
+                print(f"[EditorAgent] ⚠️ Error generando {filename}: {result.get('error')}")
+
+        # Verificar éxito general
+        all_success = all(r.get("success") for r in results.values())
+        any_success = any(r.get("success") for r in results.values())
+
+        return {
+            "files_modified": list(results.keys()),
+            "results": results,
+            "all_success": all_success,
+            "any_success": any_success,
+            "success": any_success,
+            "total_files": len(files_content),
+            "successful_files": sum(1 for r in results.values() if r.get("success"))
+        }
 
     def _extract_code(self, text: str) -> Optional[str]:
         """

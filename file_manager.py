@@ -101,20 +101,48 @@ class ProjectFileManager:
 
         change = self.pending_changes[change_id]
         file_path = self.project_path / change["file"]
+        
+        # DEBUG: Mostrar información detallada
+        print(f"\n🔧 [DEBUG] Aplicando cambio {change_id}:")
+        print(f"   📁 Ruta proyecto: {self.project_path}")
+        print(f"   📄 Archivo destino: {change['file']}")
+        print(f"   🎯 Ruta completa: {file_path}")
+        print(f"   📊 Tamaño original: {len(change['original'])} bytes")
+        print(f"   📊 Tamaño propuesto: {len(change['proposed'])} bytes")
+        print(f"   📊 Líneas original: {len(change['original'].splitlines())}")
+        print(f"   📊 Líneas propuesto: {len(change['proposed'].splitlines())}")
+        print(f"   🔍 Archivo existe: {file_path.exists()}")
 
         try:
+            # Verificar que el archivo existe
+            if not file_path.exists():
+                return False, f"Archivo no encontrado: {file_path}"
+
             # Guardar backup
             backup_path = str(file_path) + ".backup"
+            print(f"   💾 Creando backup en: {backup_path}")
             with open(file_path, 'r', encoding='utf-8') as f:
                 original = f.read()
             with open(backup_path, 'w', encoding='utf-8') as f:
                 f.write(original)
+            print(f"   ✅ Backup creado ({len(original)} bytes)")
 
             # Aplicar cambio
+            print(f"   ✏️  Escribiendo cambio al archivo...")
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(change["proposed"])
+            
+            # Verificar que se escribió correctamente
+            with open(file_path, 'r', encoding='utf-8') as f:
+                written = f.read()
+            print(f"   ✅ Archivo escrito ({len(written)} bytes)")
+            
+            if len(written) != len(change["proposed"]):
+                print(f"   ⚠️  ADVERTENCIA: Tamaño no coincide! Esperado: {len(change['proposed'])}, Escrito: {len(written)}")
+            else:
+                print(f"   ✅ Verificación exitosa - tamaño coincide")
 
-            result_msg = f"✅ Cambio aplicado a {change['file']}"
+            result_msg = f"✅ Cambio aplicado a {change['file']} ({len(written)} bytes escritos)"
 
             # Solo hacer commit si se solicita explícitamente
             if auto_commit:
@@ -129,6 +157,8 @@ class ProjectFileManager:
 
             return True, result_msg
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return False, f"Error aplicando cambio: {e}"
 
     def reject_change(self, change_id):

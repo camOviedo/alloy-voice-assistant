@@ -9,6 +9,7 @@ from config import (
     DEFAULT_MODEL,
     DEFAULT_VISION_TIMEOUT,
     PROJECT_PATH,
+    SUGGESTIONS_PATH,
     AGENT_COORDINATOR_MODEL,
     AGENT_VISION_MODEL,
     AGENT_CODE_MODEL,
@@ -57,6 +58,7 @@ class Assistant:
             vision_model=AGENT_VISION_MODEL,
             code_model=AGENT_CODE_MODEL,
             editor_model=AGENT_EDITOR_MODEL,
+            memory_dir=SUGGESTIONS_PATH,
         )
 
     def answer(self, prompt, image_base64=None, image_path=None, image_paths=None):
@@ -181,6 +183,14 @@ class Assistant:
             filename = self._extract_filename(prompt)
             if filename:
                 self._handle_file_modification(prompt, filename, image_base64, image_path, image_paths)
+                return
+            else:
+                # No se especificó archivo, usar modo smart
+                self._handle_file_modification_smart(prompt, image_base64)
+                return
+
+        # Si no es ningún comando específico, usar respuesta normal o workflow según corresponda
+        self._normal_response(prompt, image_base64)
 
     def _get_existing_capture_images(self):
         """Obtiene lista de imágenes existentes en la carpeta captures/"""
@@ -220,16 +230,36 @@ class Assistant:
             delay_between_frames = VISION_CAPTURE_DURATION / max(num_frames - 1, 1) if num_frames > 1 else 0
             
             # Iniciar stream de captura continua
-            screen_stream = ScreenStream(
-                monitor=DEFAULT_MONITOR,
-                scale_display=DEFAULT_SCALE_DISPLAY,
-                max_width=DEFAULT_MAX_WIDTH,
-                jpeg_quality=DEFAULT_JPEG_QUALITY
-            ).start()
+            try:
+                screen_stream = ScreenStream(
+                    monitor=DEFAULT_MONITOR,
+                    scale_display=DEFAULT_SCALE_DISPLAY,
+                    max_width=DEFAULT_MAX_WIDTH,
+                    jpeg_quality=DEFAULT_JPEG_QUALITY
+                ).start()
+            except Exception as e:
+                print(f"❌ Error iniciando captura de pantalla: {e}")
+                print("💡 Posibles causas: No hay display X11 disponible, o estás usando Wayland")
+                print("💡 Intenta usar imágenes existentes en captures/ o especifica un archivo de imagen")
+                return []
+            
+            # Verificar si el stream se inició correctamente
+            if not screen_stream.running:
+                print("❌ No se pudo iniciar la captura de pantalla")
+                return []
+            
             print("📹 Stream de captura iniciado - capturando frames...")
             
-            # Esperar a que el stream tenga frames
-            time.sleep(0.5)
+            # Esperar a que el stream tenga frames (con timeout)
+            wait_time = 0
+            while screen_stream.frame is None and screen_stream.running and wait_time < 3:
+                time.sleep(0.1)
+                wait_time += 0.1
+            
+            if screen_stream.frame is None:
+                print("❌ No se pudo obtener frames del stream")
+                screen_stream.stop()
+                return []
             
             # Capturar frames calculados dinámicamente (tiempo × FPS)
             print(f"📹 Capturando {num_frames} frames en {VISION_CAPTURE_DURATION}s ({VISION_CAPTURE_FPS} fps)...")
@@ -297,7 +327,7 @@ class Assistant:
         return None
 
     def _normal_response(self, prompt, image_base64):
-        """Respuesta normal del asistente"""
+        """Respuesta normal del asistente - con guardado en memoria para análisis de proyecto"""
         result = self.llm.chat(prompt, image_base64=image_base64)
 
         assistant_reply = result['content']
@@ -316,8 +346,58 @@ class Assistant:
 
         print("Response:", assistant_reply)
 
+        # Detectar si es un análisis de proyecto y guardar en memoria
+        self._save_project_analysis_to_memory(prompt, assistant_reply)
+
         if assistant_reply:
             self.voice.speak(assistant_reply[:300])
+
+    def _save_project_analysis_to_memory(self, prompt, analysis):
+        """Detecta si el prompt/respuesta contiene análisis de proyecto y lo guarda en ProjectMemory"""
+        import re
+
+        # Detectar si es un prompt de análisis de proyecto
+        project_analysis_keywords = [
+            'analiza el proyecto', 'analiza el código', 'conocimiento del proyecto',
+            'entiende el proyecto', 'estructura del proyecto', 'archivos del proyecto',
+            'analyze the project', 'understand the project', 'project structure'
+        ]
+
+        prompt_lower = prompt.lower()
+        is_project_analysis = any(kw in prompt_lower for kw in project_analysis_keywords)
+
+        if not is_project_analysis:
+            return
+
+        try:
+            # Extraer archivos mencionados en el análisis
+            files_mentioned = re.findall(r'(\w+\.py)', analysis)
+            unique_files = list(set(files_mentioned))
+
+            # Extraer un resumen del análisis (primeros 1000 chars o hasta el primer punto seguido de espacio)
+            summary = analysis[:1000].strip()
+            if len(analysis) > 1000:
+                summary += "..."
+
+            # Guardar en ProjectMemory
+            self.agent_workflow.code.memory.save_project_summary(summary, unique_files)
+            print(f"💾 Análisis del proyecto guardado en memoria ({len(unique_files)} archivos identificados)")
+
+            # También guardar análisis individual para archivos principales
+            for fname in unique_files[:5]:  # Solo los 5 principales
+                content, _ = self.file_manager.read_file(fname)
+                if content:
+                    file_analysis = {
+                        "filename": fname,
+                        "analysis": f"Archivo identificado en análisis de proyecto: {fname}",
+                        "summary": f"Archivo principal del proyecto",
+                        "files_affected": unique_files,
+                        "success": True
+                    }
+                    self.agent_workflow.code.memory.save_file_analysis(fname, content, file_analysis)
+
+        except Exception as e:
+            print(f"⚠️ No se pudo guardar análisis en memoria: {e}")
 
     def _extract_filename(self, prompt):
         """Extrae nombre de archivo del prompt"""
@@ -647,8 +727,218 @@ Si devuelves solo un fragmento, el sistema RECHAZARÁ automáticamente tu respue
         self.llm.chat_history.append({"role": "assistant", "content": assistant_reply})
         self.voice.speak(f"He preparado una modificación para {filename}. Revisa la propuesta y aprueba o rechaza el cambio.")
 
-    def _handle_file_modification_smart(self, prompt, image_base64):
-        """Maneja solicitud de modificación sin archivo especificado - usa LLM para elegir archivo"""
+    def _handle_file_modification_smart(self, prompt, image_base64=None, image_path=None, image_paths=None):
+        """Maneja solicitud de modificación sin archivo especificado - usa workflow multi-agente con análisis multi-archivo"""
+        files, error = self.file_manager.list_python_files()
+        if error:
+            reply = f"❌ Error listando archivos: {error}"
+            print("Response:", reply)
+            self.voice.speak(reply)
+            return
+
+        if not files:
+            reply = "❌ No hay archivos Python en el proyecto para analizar."
+            print("Response:", reply)
+            self.voice.speak(reply)
+            return
+
+        print(f"\n🔍 Modo SMART: Analizando {len(files)} archivos para determinar cuáles modificar...")
+        print(f"   Archivos disponibles: {', '.join(files[:5])}{'...' if len(files) > 5 else ''}")
+
+        # Usar el CodeAgent para analizar múltiples archivos y determinar cuáles modificar
+        try:
+            # Primero analizar todos los archivos juntos para identificar cuáles necesitan cambios
+            files_content = {}
+            for fname in files:
+                content, _ = self.file_manager.read_file(fname)
+                if content:
+                    files_content[fname] = content
+
+            if not files_content:
+                reply = "❌ No se pudieron leer los archivos del proyecto."
+                print("Response:", reply)
+                self.voice.speak(reply)
+                return
+
+            # Usar CodeAgent para análisis multi-archivo
+            print(f"\n🤖 Iniciando análisis multi-archivo con CodeAgent...")
+            multi_analysis = self.agent_workflow.code.analyze_multiple_files(
+                files_content=files_content,
+                user_request=prompt
+            )
+
+            if not multi_analysis.get("success"):
+                print(f"⚠️ Análisis multi-archivo falló, usando método legacy...")
+                self._handle_file_modification_smart_legacy(prompt, image_base64)
+                return
+
+            analysis_text = multi_analysis.get("analysis", "")
+            print(f"\n� Análisis del CodeAgent:")
+            print(f"   {analysis_text[:500]}...")
+
+            # Extraer archivos afectados del análisis
+            import re
+            files_to_modify = []
+            for fname in files:
+                # Buscar menciones de archivos en el análisis
+                if re.search(rf'\b{re.escape(fname)}\b', analysis_text, re.IGNORECASE):
+                    files_to_modify.append(fname)
+
+            # Si no se detectaron archivos específicos, usar el primer archivo mencionado o el principal
+            if not files_to_modify:
+                # Intentar extraer cualquier nombre de archivo .py del análisis
+                matches = re.findall(r'(\w+\.py)', analysis_text)
+                for match in matches:
+                    if match in files:
+                        files_to_modify.append(match)
+
+            # Si aún no hay archivos, usar el primero como fallback
+            if not files_to_modify and files:
+                files_to_modify = [files[0]]
+                print(f"   ⚠️ No se detectaron archivos específicos, usando: {files[0]}")
+
+            print(f"\n📁 Archivos identificados para modificación: {', '.join(files_to_modify)}")
+
+            # Si hay múltiples archivos, procesar el primero y dejar pendientes los demás
+            # (o podríamos extender el workflow para manejar múltiples archivos)
+            primary_file = files_to_modify[0]
+            primary_content = files_content.get(primary_file, "")
+
+            if not primary_content:
+                reply = f"❌ No se pudo leer el contenido de {primary_file}"
+                print("Response:", reply)
+                self.voice.speak(reply)
+                return
+
+            print(f"\n🤖 Iniciando workflow multi-agente para modificar {primary_file}...")
+            if len(files_to_modify) > 1:
+                print(f"   (Otros archivos identificados: {', '.join(files_to_modify[1:])})")
+
+            result = self.agent_workflow.run(
+                prompt=prompt,
+                image_b64=image_base64,
+                image_path=image_path,
+                image_paths=image_paths,
+                target_file=primary_file,
+                file_content=primary_content
+            )
+
+            # Procesar resultado del workflow
+            self._process_workflow_result(result, prompt, primary_file)
+
+        except Exception as e:
+            print(f"⚠️ Error en análisis multi-archivo: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"   Fallback al método legacy...")
+            self._handle_file_modification_smart_legacy(prompt, image_base64)
+
+    def _process_workflow_result(self, result, prompt, filename):
+        """Procesa el resultado del workflow multi-agente y genera la respuesta final"""
+        # Defensive check for None result
+        if result is None:
+            print("⚠️ Workflow retornó None")
+            assistant_reply = "❌ Error: El workflow no retornó resultado."
+            print("Response:", assistant_reply)
+            self.voice.speak("Hubo un error en el análisis.")
+            return
+
+        # Mostrar métricas del workflow con desglose por agente
+        tokens_used = result.get("tokens_used") or {}
+        execution_path = result.get("execution_path") or []
+        total_tokens = sum(tokens_used.values())
+
+        # Contexto disponible (basado en los modelos utilizados)
+        CONTEXT_WINDOW = 262144
+        available_tokens = CONTEXT_WINDOW - total_tokens
+
+        print(f"\n📊 Workflow completado:")
+        print(f"   - Camino: {' -> '.join(execution_path) if execution_path else 'N/A'}")
+        print(f"\n   📈 Tokens consumidos por agente:")
+        for agent, tokens in sorted(tokens_used.items()):
+            percentage = (tokens / CONTEXT_WINDOW) * 100
+            print(f"      • {agent:12}: {tokens:>8,} tokens ({percentage:>5.2f}%)")
+        print(f"   ─────────────────────────────────")
+        print(f"      • {'TOTAL':12}: {total_tokens:>8,} tokens ({(total_tokens/CONTEXT_WINDOW)*100:.2f}%)")
+        print(f"\n   💾 Disponible: {available_tokens:,} tokens / {CONTEXT_WINDOW:,} ({(available_tokens/CONTEXT_WINDOW)*100:.1f}% libre)")
+
+        # Procesar resultado del editor
+        editor_result = result.get("editor_result")
+
+        if editor_result and editor_result.get("success"):
+            proposed_code = editor_result.get("code")
+            mod_id = editor_result.get("modification_id", "unknown")
+
+            # Proponer el cambio
+            success, proposal_result = self.file_manager.propose_change(
+                filename,
+                proposed_code,
+                description=prompt[:100]
+            )
+
+            if success:
+                change_id = proposal_result
+
+                # Formatear desglose de tokens para la respuesta
+                tokens_breakdown = "\n".join([f"   • {agent}: {tokens:,} tokens" for agent, tokens in sorted(tokens_used.items())])
+
+                assistant_reply = (
+                    f"✅ He analizado y modificado `{filename}` usando el workflow multi-agente.\n\n"
+                    f"📊 Camino de ejecución: {' -> '.join(execution_path) if execution_path else 'N/A'}\n"
+                    f"📈 Tokens consumidos:\n{tokens_breakdown}\n"
+                    f"   ──────────────────\n"
+                    f"   • Total: {total_tokens:,} / 262,144 disponibles ({(total_tokens/262144)*100:.1f}%)\n\n"
+                    f"⏳ **Cambio propuesto guardado como: `{change_id}`**"
+                )
+
+                print("Response:", assistant_reply)
+                self.llm.chat_history.append({"role": "user", "content": prompt})
+                self.llm.chat_history.append({"role": "assistant", "content": assistant_reply})
+                self.voice.speak(f"He preparado una modificación usando {len(execution_path)} agentes. Revisa en pantalla y usa el teclado para decidir.")
+                self._show_pending_change_menu(change_id)
+                return
+            else:
+                assistant_reply = f"❌ Error guardando propuesta: {proposal_result}"
+        elif editor_result:
+            assistant_reply = f"❌ El agente editor no pudo generar código: {editor_result.get('error', 'Error desconocido')}\n\n"
+            # Añadir info de tokens aunque falle
+            tokens_breakdown = "\n".join([f"   • {agent}: {tokens:,} tokens" for agent, tokens in sorted(tokens_used.items())])
+            assistant_reply += f"📈 Tokens consumidos antes del error:\n{tokens_breakdown}\n   • Total: {total_tokens:,} tokens"
+        elif result.get("code_analysis"):
+            # Mostrar análisis del CodeAgent cuando no hay código generado
+            code_analysis = result["code_analysis"]
+            analysis_text = code_analysis.get("analysis", "")
+            summary = code_analysis.get("summary", "")
+
+            assistant_reply = f"📋 **Análisis de código completado**\n\n"
+            if summary:
+                assistant_reply += f"**Resumen:** {summary}\n\n"
+            assistant_reply += f"**Análisis detallado:**\n{analysis_text[:1500]}"
+            if len(analysis_text) > 1500:
+                assistant_reply += f"\n\n... (análisis truncado, total: {len(analysis_text)} caracteres)"
+
+            # Añadir desglose detallado de tokens
+            tokens_breakdown = "\n".join([f"   • {agent}: {tokens:,} tokens" for agent, tokens in sorted(tokens_used.items())])
+            assistant_reply += f"\n\n📊 Camino de ejecución: {' -> '.join(execution_path) if execution_path else 'N/A'}"
+            assistant_reply += f"\n📈 Tokens consumidos:\n{tokens_breakdown}"
+            assistant_reply += f"\n   ──────────────────"
+            assistant_reply += f"\n   • Total: {total_tokens:,} / 262,144 disponibles ({(total_tokens/262144)*100:.1f}%)"
+
+            print("Response:", assistant_reply)
+            self.llm.chat_history.append({"role": "user", "content": prompt})
+            self.llm.chat_history.append({"role": "assistant", "content": assistant_reply})
+            self.voice.speak("He completado el análisis del código. Revisa los detalles en pantalla.")
+            return
+        else:
+            assistant_reply = f"⚠️ Workflow completado pero no se generó código ni análisis."
+
+        print("Response:", assistant_reply)
+        self.llm.chat_history.append({"role": "user", "content": prompt})
+        self.llm.chat_history.append({"role": "assistant", "content": assistant_reply})
+        self.voice.speak(f"He completado el análisis. Revisa los resultados en pantalla.")
+
+    def _handle_file_modification_smart_legacy(self, prompt, image_base64=None):
+        """Método legacy para modificación smart (fallback cuando el análisis multi-archivo falla)"""
         files, error = self.file_manager.list_python_files()
         if error:
             reply = f"❌ Error listando archivos: {error}"
@@ -684,6 +974,7 @@ ADVERTENCIA: Si devuelves solo un fragmento, el cambio será RECHAZADO automáti
             print(f"📊 Tokens - Prompt: {result['prompt_tokens']} | Generados: {result['output_tokens']} (sin imagen)")
 
         # Extraer nombre de archivo de la respuesta
+        import re
         filename_match = re.search(r'[Aa]rchivo:\s*(\w+\.py)', assistant_reply)
         if not filename_match:
             filename_match = re.search(r'[Ff]ile:\s*(\w+\.py)', assistant_reply)
