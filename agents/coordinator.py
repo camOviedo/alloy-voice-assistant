@@ -110,13 +110,20 @@ Ejemplo de salida correcta:
         """
         prompt_lower = prompt.lower()
 
-        # Keywords para visión
+        # Keywords para visión - EXPANDIDOS para capturar más casos
         vision_keywords = [
-            "pantalla", "imagen", "screenshot", "captura", "ventana",
-            "qué ves", "que ves", "muestra", "muéstrame", "error en",
-            "analyze image", "what do you see", "screen", "look at"
+            "pantalla", "imagen", "imágenes", "imagenes", "screenshot", "captura", 
+            "ventana", "foto", "fotos", "video", "ver", "mirar", "mira",
+            "qué ves", "que ves", "muestra", "muéstrame", "muestrame", "muéstrame",
+            "error en", "analyze image", "what do you see", "screen", "look at",
+            "detectar", "números", "numeros", "puerta", "salida"
         ]
         needs_vision = has_image and any(kw in prompt_lower for kw in vision_keywords)
+
+        # Si hay imágenes disponibles y se menciona cualquier cosa relacionada con 
+        # detectar, ver, analizar visualmente - forzar visión
+        if has_image and any(kw in prompt_lower for kw in ["detectar", "números", "numeros", "puerta", "salida"]):
+            needs_vision = True
 
         # Keywords para código
         code_keywords = [
