@@ -9,6 +9,8 @@ from agents.coordinator import CoordinatorAgent
 from agents.vision import VisionAgent
 from agents.code import CodeAgent
 from agents.editor import EditorAgent
+from agents.reviewer import ReviewerAgent
+from tools.web_search import web_search
 
 
 class AgentState(TypedDict):
@@ -30,6 +32,11 @@ class AgentState(TypedDict):
     vision_analysis: Optional[str]
     code_analysis: Optional[Dict[str, Any]]
     editor_result: Optional[Dict[str, Any]]
+    review_result: Optional[Dict[str, Any]]
+
+    # Control de flujo
+    review_iterations: int
+    web_search_results: Optional[str]
 
     # Contexto de archivos
     target_file: Optional[str]
@@ -56,6 +63,7 @@ class AgentWorkflow:
         vision_model: str = "qwen3-vl:8b-vision",
         code_model: str = "qwen3-coder-30b",
         editor_model: str = "qwen3-coder-30b",
+        reviewer_model: str = "qwen2.5-coder:14b",
         memory_dir: str = None
     ):
         """
@@ -66,6 +74,7 @@ class AgentWorkflow:
             vision_model: Modelo para el agente de visión
             code_model: Modelo para el agente de código
             editor_model: Modelo para el agente editor
+            reviewer_model: Modelo para el agente revisor
             memory_dir: Directorio para memoria persistente
         """
         # Inicializar agentes
@@ -73,6 +82,7 @@ class AgentWorkflow:
         self.vision = VisionAgent(vision_model, memory_dir)
         self.code = CodeAgent(code_model, memory_dir)
         self.editor = EditorAgent(editor_model, memory_dir)
+        self.reviewer = ReviewerAgent(reviewer_model)
 
         # Construir el grafo
         self.workflow = self._build_graph()
@@ -89,6 +99,7 @@ class AgentWorkflow:
         workflow.add_node("vision", self._run_vision)
         workflow.add_node("code", self._run_code)
         workflow.add_node("editor", self._run_editor)
+        workflow.add_node("reviewer", self._run_reviewer)
         workflow.add_node("direct_response", self._run_direct_response)
         workflow.add_node("finalize", self._finalize)
 
@@ -126,8 +137,25 @@ class AgentWorkflow:
             }
         )
 
-        # Editor siempre va a finalizar
-        workflow.add_edge("editor", "finalize")
+        # Después de editor, va a reviewer para verificación
+        workflow.add_conditional_edges(
+            "editor",
+            self._route_from_editor,
+            {
+                "reviewer": "reviewer",
+                "finalize": "finalize",
+            }
+        )
+
+        # Después de reviewer, puede volver a editor (si hay correcciones) o finalizar
+        workflow.add_conditional_edges(
+            "reviewer",
+            self._route_from_reviewer,
+            {
+                "editor": "editor",
+                "finalize": "finalize",
+            }
+        )
 
         # Direct response va a finalizar
         workflow.add_edge("direct_response", "finalize")
@@ -253,6 +281,20 @@ class AgentWorkflow:
 
         print("[Workflow] Ejecutando agente de código...")
 
+        # Verificar si necesita búsqueda web
+        web_search_results = None
+        if web_search.should_search(state["user_prompt"]):
+            print("[Workflow] Detectada posible necesidad de búsqueda web...")
+            # Buscar información sobre el error/tema
+            search_query = f"python {state['user_prompt'][:100]}"
+            results = web_search.search(search_query, domain='stackoverflow', max_results=3)
+            if results:
+                web_search_results = web_search.format_for_prompt(results)
+                print(f"[Workflow] Web search: {len(results)} resultados encontrados")
+                state["tokens_used"]["web_search"] = len(web_search_results) // 4
+
+        # Análisis con contexto de archivos relacionados si hay project_path disponible
+        # (Por ahora usamos el método simple, se puede extender más tarde)
         result = self.code.analyze_modification_request(
             filename=state["target_file"],
             code_content=state["file_content"],
@@ -261,6 +303,7 @@ class AgentWorkflow:
         )
 
         state["code_analysis"] = result
+        state["web_search_results"] = web_search_results
         state["tokens_used"]["code"] = len(str(result).split()) // 4 if not result.get("from_cache") else 0
 
         if result.get("from_cache"):
@@ -285,11 +328,20 @@ class AgentWorkflow:
 
         print("[Workflow] Ejecutando agente editor...")
 
+        # Preparar análisis combinado (código + web search)
+        analysis_parts = []
+        if state.get("code_analysis"):
+            analysis_parts.append(state["code_analysis"].get("analysis", ""))
+        if state.get("web_search_results"):
+            analysis_parts.append(state["web_search_results"])
+
+        code_analysis_combined = "\n\n".join(analysis_parts)
+
         result = self.editor.generate_modified_code(
             filename=state["target_file"],
             original_code=state["file_content"],
             user_request=state["user_prompt"],
-            code_analysis=(state.get("code_analysis") or {}).get("analysis", ""),
+            code_analysis=code_analysis_combined,
             image_analysis=state.get("vision_analysis")
         )
 
@@ -310,6 +362,75 @@ class AgentWorkflow:
             print(f"[Workflow] Editor: error - {result.get('error', 'desconocido')}")
 
         return state
+
+    def _route_from_editor(self, state: AgentState) -> str:
+        """Decide si el código generado necesita revisión."""
+        editor_result = state.get("editor_result")
+
+        # Si el editor falló, no hay nada que revisar
+        if not editor_result or not editor_result.get("success"):
+            return "finalize"
+
+        # Si no hay código generado, finalizar
+        if not editor_result.get("code"):
+            return "finalize"
+
+        # Siempre revisar el código generado
+        return "reviewer"
+
+    def _run_reviewer(self, state: AgentState) -> AgentState:
+        """Ejecuta el agente revisor para verificar el código generado."""
+        editor_result = state.get("editor_result")
+
+        if not editor_result or not editor_result.get("success"):
+            state["review_result"] = {"approved": False, "error": "No hay código para revisar"}
+            return state
+
+        print("[Workflow] Ejecutando agente revisor...")
+
+        # Incrementar contador de iteraciones
+        state["review_iterations"] = state.get("review_iterations", 0) + 1
+
+        result = self.reviewer.review_code(
+            filename=state["target_file"],
+            original_code=state["file_content"],
+            generated_code=editor_result["code"],
+            user_request=state["user_prompt"],
+            code_analysis=(state.get("code_analysis") or {}).get("analysis", "")
+        )
+
+        state["review_result"] = result
+        state["tokens_used"]["reviewer"] = len(str(result).split()) // 4
+
+        if result.get("approved"):
+            print(f"[Workflow] Revisor: código aprobado ({len(result.get('issues', []))} observaciones menores)")
+        else:
+            issue_count = len([i for i in result.get("issues", []) if i.get("severity") == "error"])
+            print(f"[Workflow] Revisor: código rechazado - {issue_count} errores encontrados")
+
+        return state
+
+    def _route_from_reviewer(self, state: AgentState) -> str:
+        """Decide la ruta después de la revisión."""
+        review_result = state.get("review_result")
+        iterations = state.get("review_iterations", 0)
+
+        # Si está aprobado, finalizar
+        if review_result and review_result.get("approved"):
+            return "finalize"
+
+        # Si hay código corregido por el revisor y no excedimos iteraciones, volver a editor
+        if review_result and review_result.get("corrected_code") and iterations < 2:
+            # Actualizar el editor_result con el código corregido
+            state["editor_result"]["code"] = review_result["corrected_code"]
+            print(f"[Workflow] Aplicando correcciones del revisor (iteración {iterations})")
+            return "editor"
+
+        # Si hay errores pero no tenemos corrección, o excedimos iteraciones, finalizar igual
+        if iterations >= 2:
+            print("[Workflow] Máximo de revisiones alcanzado, finalizando...")
+
+        return "finalize"
 
     def _run_direct_response(self, state: AgentState) -> AgentState:
         """Genera una respuesta directa sin agentes especializados."""
@@ -406,6 +527,9 @@ class AgentWorkflow:
             "vision_analysis": None,
             "code_analysis": None,
             "editor_result": None,
+            "review_result": None,
+            "review_iterations": 0,
+            "web_search_results": None,
             "target_file": target_file,
             "file_content": file_content,
             "final_response": "",
