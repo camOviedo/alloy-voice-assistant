@@ -309,8 +309,23 @@ REGLAS:
                     "corrected_code": result.get("corrected_code"),
                     "summary": result.get("summary", "Revisión completada")
                 }
-        except Exception as e:
+        except json.JSONDecodeError as e:
             print(f"[ReviewerAgent] Error parseando JSON: {e}")
+            # JSON malformado - devolver como no aprobado para revisión manual
+            return {
+                "approved": False,
+                "issues": [{
+                    "severity": "error",
+                    "type": "parse_error",
+                    "description": f"Error parseando respuesta JSON del revisor: {e}",
+                    "line": None,
+                    "suggestion": "Revisar manualmente el código generado"
+                }],
+                "corrected_code": None,
+                "summary": f"Error parseando JSON: {e}"
+            }
+        except Exception as e:
+            print(f"[ReviewerAgent] Error inesperado: {e}")
 
         # Fallback: interpretar texto
         content_lower = content.lower()

@@ -27,6 +27,7 @@ class AgentState(TypedDict):
     needs_code_analysis: bool
     needs_code_generation: bool
     direct_response: bool
+    coordinator_reasoning: Optional[str]  # Razonamiento del coordinador
 
     # Resultados de agentes
     vision_analysis: Optional[str]
@@ -179,6 +180,7 @@ class AgentWorkflow:
         state["needs_code_generation"] = plan["code_generation"]
         state["direct_response"] = plan["direct_response"]
         state["execution_path"] = plan.get("execution_sequence", [])
+        state["coordinator_reasoning"] = plan.get("reasoning", "")  # Guardar razonamiento
 
         print(f"[Workflow] Plan: {state['execution_path']}")
         print(f"[Workflow] Razonamiento: {plan.get('reasoning', 'N/A')}")
@@ -426,7 +428,22 @@ class AgentWorkflow:
             print(f"[Workflow] Aplicando correcciones del revisor (iteración {iterations})")
             return "editor"
 
-        # Si hay errores pero no tenemos corrección, o excedimos iteraciones, finalizar igual
+        # Si el error es solo de parseo (no de código), permitir que el usuario revise manualmente
+        if review_result and review_result.get("issues"):
+            issues = review_result.get("issues", [])
+            # Filtrar solo errores de parseo vs errores reales de código
+            parse_errors = [i for i in issues if i.get("type") == "parse_error"]
+            real_errors = [i for i in issues if i.get("type") not in ["parse_error", "info"]]
+
+            # Si solo hay errores de parseo, aprobar para revisión manual
+            if parse_errors and not real_errors:
+                print("[Workflow] Revisor: error de parseo, código aprobado para revisión manual")
+                # Marcar como aprobado para que se muestre al usuario
+                review_result["approved"] = True
+                review_result["needs_manual_review"] = True
+                return "finalize"
+
+        # Si hay errores reales pero no tenemos corrección, o excedimos iteraciones, finalizar igual
         if iterations >= 2:
             print("[Workflow] Máximo de revisiones alcanzado, finalizando...")
 
@@ -524,6 +541,7 @@ class AgentWorkflow:
             "needs_code_analysis": False,
             "needs_code_generation": False,
             "direct_response": False,
+            "coordinator_reasoning": None,
             "vision_analysis": None,
             "code_analysis": None,
             "editor_result": None,
