@@ -118,12 +118,13 @@ class AgentWorkflow:
             }
         )
 
-        # Después de visión, siempre va a code si necesita código, o directo a finalizar
+        # Después de visión, puede ir a code (si necesita análisis), editor (si solo generación), o finalizar
         workflow.add_conditional_edges(
             "vision",
             self._route_from_vision,
             {
                 "code": "code",
+                "editor": "editor",
                 "finalize": "finalize",
             }
         )
@@ -273,6 +274,8 @@ class AgentWorkflow:
         """Decide la ruta después del análisis de visión."""
         if state["needs_code_analysis"]:
             return "code"
+        if state["needs_code_generation"]:
+            return "editor"
         return "finalize"
 
     def _run_code(self, state: AgentState) -> AgentState:
@@ -324,8 +327,15 @@ class AgentWorkflow:
 
     def _run_editor(self, state: AgentState) -> AgentState:
         """Ejecuta el agente editor (generación de código)."""
-        if not state["target_file"] or not state["file_content"]:
+        target_file = state.get("target_file")
+        file_content = state.get("file_content")
+        
+        print(f"[Workflow] Editor input - target_file: {target_file}")
+        print(f"[Workflow] Editor input - file_content length: {len(file_content) if file_content else 0}")
+        
+        if not target_file or not file_content:
             state["editor_result"] = {"error": "No hay archivo para editar", "success": False}
+            print(f"[Workflow] Editor: error - falta archivo o contenido")
             return state
 
         print("[Workflow] Ejecutando agente editor...")
@@ -530,6 +540,8 @@ class AgentWorkflow:
             (image_path is not None) or
             (image_paths is not None and len(image_paths) > 0)
         )
+        
+        print(f"[Workflow] run() called with target_file={target_file}, file_content_length={len(file_content) if file_content else 0}, has_image={has_image}")
         
         initial_state: AgentState = {
             "user_prompt": prompt,
