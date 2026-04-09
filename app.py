@@ -14,6 +14,7 @@ from config import (
     DEFAULT_MODEL,
     PROJECT_PATH,
     SUGGESTIONS_PATH,
+    CAPTURES_PATH,
     AGENT_COORDINATOR_MODEL,
     AGENT_VISION_MODEL,
     AGENT_CODE_MODEL,
@@ -192,6 +193,63 @@ async def on_reject_change(action):
         await cl.Message(content=f"❌ **{result}**").send()
 
 
+def get_existing_capture_images():
+    """Obtiene lista de imágenes existentes en la carpeta captures/"""
+    try:
+        if not os.path.exists(CAPTURES_PATH):
+            return []
+
+        # Extensiones de imagen soportadas
+        valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+
+        images = []
+        for file in sorted(os.listdir(CAPTURES_PATH)):
+            if file.lower().endswith(valid_extensions):
+                full_path = os.path.join(CAPTURES_PATH, file)
+                images.append(full_path)
+
+        return images
+    except Exception as e:
+        print(f"⚠️ Error buscando imágenes existentes: {e}")
+        return []
+
+
+@cl.action_callback("use_existing_images")
+async def on_use_existing_images(action):
+    """Carga imágenes existentes de la carpeta captures/"""
+    pending = cl.user_session.get("pending_prompt", "")
+
+    # Obtener imágenes existentes
+    existing_images = get_existing_capture_images()
+
+    if not existing_images:
+        await cl.Message(content="❌ No hay imágenes en la carpeta captures/").send()
+        return
+
+    # Guardar en sesión
+    cl.user_session.set("captures", existing_images)
+
+    # Mostrar imágenes cargadas
+    await cl.Message(content=f"✅ **{len(existing_images)} imágenes cargadas desde captures/**").send()
+
+    elements = []
+    for path in existing_images[:4]:  # Mostrar máximo 4
+        if os.path.exists(path):
+            elements.append(cl.Image(name=os.path.basename(path), path=path, display="inline"))
+
+    if elements:
+        await cl.Message(
+            content="📸 **Imágenes a analizar:**",
+            elements=elements
+        ).send()
+
+    # Procesar el prompt pendiente
+    if pending:
+        await cl.Message(content="▶️ **Continuando con el análisis...**").send()
+        await process_prompt(pending)
+        cl.user_session.set("pending_prompt", "")
+
+
 @cl.action_callback("capture_screen")
 async def on_capture_screen(action):
     """Activa captura de pantalla local"""
@@ -310,18 +368,34 @@ async def on_message(message: cl.Message):
     # Detectar si necesita visión
     needs_vision = needs_vision_analysis(prompt)
 
-    # Si necesita visión y no hay capturas, preguntar
+    # Si necesita visión y no hay capturas, preguntar por fuente
     if needs_vision:
         captures = cl.user_session.get("captures", [])
         if not captures:
-            actions = [
-                cl.Action(name="capture_screen", label="📷 Capturar Pantalla", payload={"value": "capture"}),
-                cl.Action(name="continue_without_capture", label="📝 Continuar sin imagen", payload={"value": "skip"})
-            ]
-            await cl.Message(
-                content="👁️ **Detecté que tu prompt podría necesitar análisis visual.**\n\n¿Deseas capturar la pantalla primero?",
-                actions=actions
-            ).send()
+            # Verificar si hay imágenes existentes en captures/
+            existing_images = get_existing_capture_images()
+
+            if existing_images:
+                # Hay imágenes existentes - ofrecer opciones
+                actions = [
+                    cl.Action(name="use_existing_images", label=f"📂 Usar {len(existing_images)} imágenes existentes", payload={"value": "existing"}),
+                    cl.Action(name="capture_screen", label="📷 Capturar pantalla nueva", payload={"value": "capture"}),
+                    cl.Action(name="continue_without_capture", label="📝 Continuar sin imagen", payload={"value": "skip"})
+                ]
+                await cl.Message(
+                    content=f"👁️ **Detecté que tu prompt podría necesitar análisis visual.**\n\n📁 Encontré **{len(existing_images)}** imágenes en la carpeta `captures/`\n\n¿Qué deseas hacer?",
+                    actions=actions
+                ).send()
+            else:
+                # No hay imágenes existentes
+                actions = [
+                    cl.Action(name="capture_screen", label="📷 Capturar Pantalla", payload={"value": "capture"}),
+                    cl.Action(name="continue_without_capture", label="📝 Continuar sin imagen", payload={"value": "skip"})
+                ]
+                await cl.Message(
+                    content="👁️ **Detecté que tu prompt podría necesitar análisis visual.**\n\n¿Deseas capturar la pantalla primero?",
+                    actions=actions
+                ).send()
             # Guardar el prompt para procesarlo después
             cl.user_session.set("pending_prompt", prompt)
             return
@@ -614,100 +688,143 @@ async def process_with_workflow(prompt: str, force_filename: str = None):
             step_output = f"**Tokens consumidos por agente:**\n{metrics_text}\n\n**Total:** {total_tokens:,} tokens"
             step.output = step_output
 
-        # Mostrar resultado final
-        if result.get("editor_result") and result["editor_result"].get("success"):
-            editor_result = result["editor_result"]
-            proposed_code = editor_result.get("code")
-            mod_id = editor_result.get("modification_id", "unknown")
+        # DEBUG: Ver qué tenemos en el resultado
+        print(f"[DEBUG] Result keys: {result.keys()}")
+        print(f"[DEBUG] editor_result: {result.get('editor_result')}")
+        print(f"[DEBUG] filename: {filename}")
 
-            # Verificar que tenemos filename válido
-            if not filename:
-                await cl.Message(content="❌ Error interno: no se detectó archivo para guardar el cambio.").send()
-                return
+        # Extraer datos del resultado ANTES de cerrar el paso
+        editor_result = result.get("editor_result")
+        code_analysis = result.get("code_analysis")
+        vision_analysis = result.get("vision_analysis")
+        has_editor_result = editor_result and editor_result.get("success")
+        has_code_only = code_analysis and not editor_result
+        has_vision_only = vision_analysis and not code_analysis
 
-            if not proposed_code:
-                await cl.Message(content="❌ Error: el editor no generó código.").send()
-                return
+        # Guardar datos en variables de sesión para usar fuera del paso
+        if has_editor_result:
+            cl.user_session.set("pending_proposal", {
+                "filename": filename,
+                "proposed_code": editor_result.get("code"),
+                "proposal_result": None,  # Se calculará después
+                "prompt": prompt
+            })
 
-            # Proponer cambio
-            try:
-                success, proposal_result = fm.propose_change(
-                    filename,
-                    proposed_code,
-                    description=prompt[:100]
-                )
-            except Exception as e:
-                await cl.Message(content=f"❌ Error al guardar propuesta: {e}").send()
-                import traceback
-                traceback.print_exc()
-                return
+    # ============================================================
+    # FUERA DEL PASO PRINCIPAL - Enviar mensajes de resultado
+    # ============================================================
 
-            if success:
-                response = f"""✅ **Código modificado generado y guardado**
+    # Caso 1: Editor generó código
+    if has_editor_result:
+        pending = cl.user_session.get("pending_proposal")
+        proposed_code = pending["proposed_code"]
+        filename = pending["filename"]
+
+        print(f"[DEBUG] Entrando a bloque de editor. proposed_code length: {len(proposed_code) if proposed_code else 0}")
+
+        # Verificar que tenemos filename válido
+        if not filename:
+            await cl.Message(content="❌ Error interno: no se detectó archivo para guardar el cambio.").send()
+            return
+
+        if not proposed_code:
+            await cl.Message(content="❌ Error: el editor no generó código.").send()
+            return
+
+        # Proponer cambio
+        try:
+            print(f"[DEBUG] Llamando fm.propose_change con filename={filename}")
+            success, proposal_result = fm.propose_change(
+                filename,
+                proposed_code,
+                description=prompt[:100]
+            )
+            print(f"[DEBUG] propose_change result: success={success}, proposal_result={proposal_result}")
+        except Exception as e:
+            await cl.Message(content=f"❌ Error al guardar propuesta: {e}").send()
+            import traceback
+            traceback.print_exc()
+            return
+
+        if success:
+            print(f"[DEBUG] Enviando mensajes con botones de aprobación...")
+
+            # Preparar código truncado para mostrar
+            code_preview = proposed_code[:1500]
+            code_truncated = len(proposed_code) > 1500
+
+            # Mensaje principal
+            response_content = f"""✅ **Código modificado generado y guardado**
 
 ⏳ **ID del cambio:** `{proposal_result}`
 📁 **Archivo:** `{filename}`
 
-El código está listo para revisar. Usa los botones de abajo para aprobar o rechazar el cambio.
+**Vista previa del código:**
+```python
+{code_preview}
+```
+{"*(Código truncado, total: " + str(len(proposed_code)) + " caracteres)*" if code_truncated else ""}
 """
-                await cl.Message(content=response).send()
+            print(f"[DEBUG] Enviando mensaje principal...")
+            await cl.Message(content=response_content).send()
 
-                # Mostrar código completo
-                await cl.Message(
-                    content=f"```python\n{proposed_code[:2000]}\n```",
-                ).send()
+            # Enviar acciones de forma independiente
+            print(f"[DEBUG] Enviando acciones...")
 
-                if len(proposed_code) > 2000:
-                    await cl.Message(content=f"*(Código truncado, total: {len(proposed_code)} caracteres)*").send()
-
-                # Mostrar acciones
+            async def send_actions():
                 actions = [
-                    cl.Action(name="approve_change", label="✅ Aprobar Cambio", payload={"value": proposal_result}),
-                    cl.Action(name="reject_change", label="❌ Rechazar Cambio", payload={"value": proposal_result}),
+                    cl.Action(name="approve_change", label="✅ Aprobar", payload={"value": proposal_result}),
+                    cl.Action(name="reject_change", label="❌ Rechazar", payload={"value": proposal_result}),
                 ]
                 await cl.Message(content="**¿Deseas aplicar este cambio?**", actions=actions).send()
-            else:
-                await cl.Message(content=f"❌ Error guardando propuesta: {proposal_result}").send()
+                print(f"[DEBUG] Acciones enviadas desde tarea")
 
-        elif result.get("code_analysis") and not result.get("editor_result"):
-            # Solo análisis sin generación
-            code_analysis = result["code_analysis"]
-            analysis_text = code_analysis.get("analysis", "")
-            summary = code_analysis.get("summary", "")
+            # Crear tarea independiente
+            import asyncio
+            task = asyncio.create_task(send_actions())
+            print(f"[DEBUG] Tarea creada: {task}")
+        else:
+            await cl.Message(content=f"❌ Error guardando propuesta: {proposal_result}").send()
 
-            response = f"""📋 **Análisis de código completado**
+    # Caso 2: Solo análisis de código
+    elif has_code_only:
+        code_analysis = result["code_analysis"]
+        analysis_text = code_analysis.get("analysis", "")
+        summary = code_analysis.get("summary", "")
+
+        response = f"""📋 **Análisis de código completado**
 
 **Resumen:** {summary}
 
 **Análisis detallado:**
 {analysis_text[:1200]}
 """
-            if len(analysis_text) > 1200:
-                response += f"\n\n*(Análisis truncado, total: {len(analysis_text)} caracteres)*"
+        if len(analysis_text) > 1200:
+            response += f"\n\n*(Análisis truncado, total: {len(analysis_text)} caracteres)*"
 
-            response += f"\n\n📈 **Tokens consumidos:** {total_tokens:,}"
+        response += f"\n\n📈 **Tokens consumidos:** {total_tokens:,}"
 
-            await cl.Message(content=response).send()
+        await cl.Message(content=response).send()
 
-        elif result.get("vision_analysis") and not result.get("code_analysis"):
-            # Solo análisis visual
-            vision_text = result["vision_analysis"]
+    # Caso 3: Solo análisis visual
+    elif has_vision_only:
+        vision_text = result["vision_analysis"]
 
-            response = f"""👁️ **Análisis visual completado**
+        response = f"""👁️ **Análisis visual completado**
 
 {vision_text[:1200]}
 """
-            if len(vision_text) > 1200:
-                response += f"\n\n*(Análisis truncado, total: {len(vision_text)} caracteres)*"
+        if len(vision_text) > 1200:
+            response += f"\n\n*(Análisis truncado, total: {len(vision_text)} caracteres)*"
 
-            response += f"\n\n📈 **Tokens consumidos:** {total_tokens:,}"
+        response += f"\n\n📈 **Tokens consumidos:** {total_tokens:,}"
 
-            await cl.Message(content=response).send()
+        await cl.Message(content=response).send()
 
-        else:
-            # Respuesta directa o fallback
-            final_response = result.get('response', 'No hay respuesta')
-            await cl.Message(content=f"📝 **Respuesta:**\n\n{final_response}").send()
+    # Caso 4: Respuesta directa o fallback
+    else:
+        final_response = result.get('response', 'No hay respuesta')
+        await cl.Message(content=f"📝 **Respuesta:**\n\n{final_response}").send()
 
     # Limpiar capturas después de usarlas
     cl.user_session.set("captures", [])
