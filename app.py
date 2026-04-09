@@ -528,8 +528,17 @@ async def process_with_workflow(prompt: str, force_filename: str = None):
             await cl.Message(content=f"❌ No se pudo leer `{filename}`: {error}").send()
             return
 
-    # Si no hay archivo pero el prompt parece querer modificar código -> MODO SMART
-    if not filename and any(kw in prompt.lower() for kw in ["corrige", "modifica", "cambia", "elimina", "error", "bug", "fix", "arregla"]):
+    # Si no hay archivo pero el prompt parece querer analizar/modificar código -> MODO SMART
+    analysis_keywords = [
+        # Modificación
+        "corrige", "modifica", "cambia", "elimina", "error", "bug", "fix", "arregla",
+        # Análisis/Comprensión
+        "revisa", "revisar", "comprende", "comprender", "analiza", "analizar",
+        "identifica", "identificar", "entender", "estudiar", "explorar", "examinar",
+        "describe", "describir", "explica", "explicar", "que hace", "cómo funciona",
+        "funciones", "métodos", "clases", "interacciones", "estructura", "flujo"
+    ]
+    if not filename and any(kw in prompt.lower() for kw in analysis_keywords):
         # Modo SMART: Analizar todos los archivos para detectar cuál modificar
         files, _ = fm.list_python_files()
         if files:
