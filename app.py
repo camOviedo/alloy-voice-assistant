@@ -530,13 +530,23 @@ async def process_with_workflow(prompt: str, force_filename: str = None):
 
     # Si no hay archivo pero el prompt parece querer analizar/modificar código -> MODO SMART
     analysis_keywords = [
-        # Modificación
-        "corrige", "modifica", "cambia", "elimina", "error", "bug", "fix", "arregla",
+        # Modificación - verbos imperativos
+        "corrige", "corregir", "modifica", "modificar", "cambia", "cambiar", "cambios",
+        "elimina", "eliminar", "error", "bug", "fix", "arregla", "arreglar",
+        "haz", "hacer", "actualiza", "actualizar", "implementa", "implementar",
+        "implementado", "realizados", "adapta", "adaptar", "ajusta", "ajustar",
+        "añade", "agrega", "agregar", "quita", "quitar", "muestra", "mostrar",
+        "añadir", "agregar", "incorpora", "incorporar", "soluciona", "solucionar",
+        "repara", "reparar", "optimiza", "optimizar", "mejora", "mejorar",
+        "refactoriza", "refactorizar", "actualiza", "actualizar",
         # Análisis/Comprensión
         "revisa", "revisar", "comprende", "comprender", "analiza", "analizar",
         "identifica", "identificar", "entender", "estudiar", "explorar", "examinar",
         "describe", "describir", "explica", "explicar", "que hace", "cómo funciona",
-        "funciones", "métodos", "clases", "interacciones", "estructura", "flujo"
+        "funciones", "métodos", "clases", "interacciones", "estructura", "flujo",
+        # Contexto de modificación
+        "necesito", "necesita", "debería", "deberia", "falta", "faltan",
+        "ahora", "desde", "hacia", "para que", "debe", "debemos"
     ]
     if not filename and any(kw in prompt.lower() for kw in analysis_keywords):
         # Modo SMART: Analizar todos los archivos para detectar cuál modificar
