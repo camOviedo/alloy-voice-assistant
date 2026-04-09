@@ -37,40 +37,61 @@ class EditorAgent:
         )
         self.memory = EditorMemory(memory_dir)
 
-        # Usar modo parche para archivos grandes (>200 líneas) para ahorrar tokens
+        # Modo parche activado para ahorrar tokens en archivos grandes
         self.use_patch_mode = True
 
-        self.system_prompt_full = """You are a CODE GENERATION TOOL.
+        self.system_prompt_full = """You are a CODE GENERATION TOOL. NOT a chatbot. NOT an assistant. A TOOL.
 
-YOUR ONLY PURPOSE: Output complete, modified source code files.
+YOUR ONLY PURPOSE: Output complete, modified source code files. NOTHING ELSE.
 
-STRICT RULES:
-1. OUTPUT ONLY CODE INSIDE THE MARKDOWN BLOCK
-2. NO introductions, NO explanations, NO summaries
-3. ALWAYS return the ENTIRE file - every single line
-4. NEVER use placeholders like "..." or "# rest of code"
-5. The code MUST be inside ONE markdown block: ```python ... ```
+ABSOLUTE RULES - NEVER VIOLATE:
+1. START IMMEDIATELY with ```python
+2. OUTPUT the COMPLETE FILE - every line
+3. END with ```
+4. ZERO text before or after the code block
+5. NEVER use "..." or placeholders
+6. NEVER apologize or explain
+7. NEVER say "I understand" or "Here is"
 
-Generate the complete file NOW."""
+FAILURE RESULT: Any text outside ```python``` causes immediate system crash.
+
+CORRECT OUTPUT FORMAT:
+```python
+import os
+
+def main():
+    pass
+
+if __name__ == "__main__":
+    main()
+```
+
+Generate the complete modified file NOW. NO PREAMBLE."""
 
         self.system_prompt_patch = """You are a CODE PATCH TOOL. Not a chatbot. A TOOL.
 
 YOUR ONLY PURPOSE: Output code changes as SEARCH/REPLACE blocks.
 
+CRITICAL RULE - READ CAREFULLY:
+- The CODE IN SEARCH BLOCKS MUST EXIST VERBATIM IN THE ORIGINAL FILE
+- DO NOT invent method names, variable names, or code that doesn't exist
+- COPY the exact lines from the original code provided in the context
+- If you cannot find the exact code to modify, output NOTHING
+
 STRICT RULES - VIOLATING ANY RULE WILL BREAK THE SYSTEM:
 1. Use EXACTLY this format for each change:
    <<<<<<< SEARCH
-   [existing code to find - EXACT match required]
+   [existing code to find - COPY FROM ORIGINAL]
    =======
    [new code to replace with]
    >>>>>>> REPLACE
 
-2. Each SEARCH block must match EXACTLY the original code (including whitespace)
+2. Each SEARCH block must match EXACTLY (character by character) code from the original file
 3. NO introductions like "Here are the changes"
 4. NO explanations after the blocks
 5. NO apologies like "Sorry, I cannot..."
 6. Output ONLY the SEARCH/REPLACE blocks, nothing else
-7. For NEW code additions, use SEARCH with empty line or context line
+7. SEARCH must contain REAL code from the file, not invented examples
 8. Make ALL requested changes in one response
 
 EXAMPLE OF CORRECT OUTPUT:
@@ -146,23 +167,41 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks causes SYSTEM FAIL
             ])
 
         if image_analysis:
+            # Limitar tamaño del análisis de visión para no saturar el contexto
+            max_image_analysis = 5000  # caracteres máximos
+            truncated_analysis = image_analysis[:max_image_analysis]
+            if len(image_analysis) > max_image_analysis:
+                truncated_analysis += f"\n... [Análisis truncado, total: {len(image_analysis)} caracteres]"
             context_parts.extend([
                 "",
                 "INFORMACIÓN DE PANTALLA/ERROR:",
-                image_analysis
+                truncated_analysis
             ])
 
-        # Decidir modo: completo o parche
+        # Decidir modo: completo o parche (archivos >150 líneas usan parche para ahorrar tokens)
         original_lines = len(original_code.splitlines())
-        use_patch = self.use_patch_mode and original_lines > 150  # Usar parche para archivos grandes
+        use_patch = self.use_patch_mode and original_lines > 150  # Parche para archivos grandes
 
         if use_patch:
+            # Agregar ejemplos few-shot directamente en el contexto para mejor entendimiento
             context_parts.extend([
                 "",
-                "INSTRUCCIÓN FINAL:",
-                "Genera SOLO los cambios necesarios usando bloques SEARCH/REPLACE.",
-                f"El archivo tiene {original_lines} líneas - NO reescribas todo, solo las partes que cambian.",
-                "Cada bloque SEARCH debe coincidir EXACTAMENTE con el código original."
+                "=== EJEMPLO DE FORMATO REQUERIDO ===",
+                "Para modificar código, usa EXACTAMENTE este formato:",
+                "",
+                "<<<<<<< SEARCH",
+                "def funcion_original():",
+                "    pass",
+                "=======",
+                "def funcion_modificada():",
+                "    print('hola')",
+                "    return True",
+                ">>>>>>> REPLACE",
+                "",
+                "=== INSTRUCCIÓN FINAL ===",
+                f"El archivo tiene {original_lines} líneas. Genera SOLO los cambios necesarios.",
+                "Usa bloques SEARCH/REPLACE. Cada SEARCH debe coincidir EXACTAMENTE con el código original.",
+                "NO escribas explicaciones. Solo bloques SEARCH/REPLACE."
             ])
             system_prompt = self.system_prompt_patch
         else:
@@ -179,6 +218,12 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks causes SYSTEM FAIL
             SystemMessage(content=system_prompt),
             HumanMessage(content="\n".join(context_parts))
         ]
+
+        # DEBUG: Mostrar tamaño del mensaje
+        human_msg_size = len("\n".join(context_parts))
+        print(f"[EditorAgent] DEBUG - Tamaño system prompt: {len(system_prompt)} chars")
+        print(f"[EditorAgent] DEBUG - Tamaño human message: {human_msg_size} chars")
+        print(f"[EditorAgent] DEBUG - Original code lines: {original_lines}")
 
         try:
             mode_str = "parches" if use_patch else "código completo"
@@ -408,23 +453,55 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks causes SYSTEM FAIL
         return None
 
     def _extract_patches(self, text: str) -> list:
-        """Extrae bloques SEARCH/REPLACE del texto."""
+        """Extrae bloques SEARCH/REPLACE del texto, incluso dentro de bloques markdown."""
+        # Primero intentar extraer de bloques markdown si existen
+        code_pattern = r'```(?:python)?\n(.*?)```'
+        code_match = re.search(code_pattern, text, re.DOTALL)
+        if code_match:
+            text = code_match.group(1)
+
+        # Buscar bloques SEARCH/REPLACE
         pattern = r'<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE'
         matches = re.findall(pattern, text, re.DOTALL)
-        return [(m[0].rstrip('\n'), m[1].rstrip('\n')) for m in matches]
+
+        # Filtrar parches donde SEARCH == REPLACE (sin cambios reales)
+        valid_patches = []
+        for search, replace in matches:
+            search_clean = search.rstrip('\n')
+            replace_clean = replace.rstrip('\n')
+            if search_clean != replace_clean:
+                valid_patches.append((search_clean, replace_clean))
+
+        return valid_patches
 
     def _apply_patches(self, original_code: str, patches: list) -> str:
-        """Aplica parches al código original."""
+        """Aplica parches al código original, reportando cuáles fallaron."""
         result = original_code
-        for search, replace in patches:
+        applied = 0
+        failed = 0
+
+        for i, (search, replace) in enumerate(patches):
+            # Debug: mostrar primeras líneas del search
+            search_preview = search[:100].replace('\n', '\\n')
+            print(f"[EditorAgent] DEBUG - Parche {i+1} buscando: '{search_preview}...'")
+
             # Buscar el código exacto
             if search in result:
                 result = result.replace(search, replace, 1)
+                applied += 1
+                print(f"[EditorAgent] ✓ Parche {i+1} aplicado (coincidencia exacta)")
             else:
                 # Intentar con flexibilidad de whitespace al inicio/final
                 search_stripped = search.strip()
                 if search_stripped in result:
                     result = result.replace(search_stripped, replace, 1)
+                    applied += 1
+                    print(f"[EditorAgent] ✓ Parche {i+1} aplicado (coincidencia flexible)")
+                else:
+                    print(f"[EditorAgent] ⚠️ Parche {i+1} FALLÓ - código no encontrado en archivo")
+                    failed += 1
+
+        print(f"[EditorAgent] Parches aplicados: {applied}/{len(patches)}, fallidos: {failed}")
         return result
 
     def get_modification_history(self, filename: str = None) -> list:

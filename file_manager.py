@@ -69,8 +69,12 @@ class ProjectFileManager:
         original_lines = len(original_content.splitlines())
         new_lines = len(new_content.splitlines())
 
-        if new_lines < original_lines * 0.1:
-            # El código nuevo tiene menos del 10% de líneas del original - probablemente un error
+        # En modo parche, el código puede ser significativamente más corto (hasta 30% del original)
+        # En modo completo, debe mantenerse cercano al tamaño original
+        min_acceptable_ratio = 0.3  # Aceptar si es al menos 30% del original (para modo parche)
+
+        if new_lines < original_lines * min_acceptable_ratio:
+            # El código nuevo tiene menos del 30% de líneas del original - probablemente un error
             warning = f"⚠️ ADVERTENCIA: El código propuesto ({new_lines} líneas) es demasiado corto vs el original ({original_lines} líneas)."
             print(f"\n{'='*60}")
             print(warning)
