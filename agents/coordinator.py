@@ -26,7 +26,7 @@ class CoordinatorAgent:
         self.llm = ChatOllama(
             model=model_name,
             temperature=0.1,  # Baja temperatura para decisiones consistentes
-            num_ctx=4096,  # Contexto suficiente para coordinación
+            num_ctx=8192,  # Contexto suficiente para coordinación
             format="json"
         )
 
@@ -41,21 +41,36 @@ DECISIONES POSIBLES:
 4. "direct_response": true/false - ¿Es una pregunta simple que no requiere agentes?
 
 REGLAS DETALLADAS:
-- "vision": true SOLO si el prompt menciona explícitamente imágenes, pantalla, screenshot, "qué ves", "muestra", etc.
+- "vision": true SOLO si el prompt menciona explícitamente imágenes, pantalla, screenshot, "qué ves", "muestra", etc. Y hay imágenes disponibles.
 - "code_analysis": true si menciona archivos, código, modificar, cambiar, actualizar, fix, bug, error, importaciones
-- "code_generation": true SIEMPRE que el usuario pida: corregir, modificar, cambiar, actualizar, implementar, crear, añadir, eliminar, arreglar, reparar, solucionar CÓDIGO
+- "code_generation": true SIEMPRE que el usuario pida: corregir, modificar, cambiar, actualizar, implementar, crear, añadir, eliminar, arreglar, reparar, solucionar, hacer cambios, ajustar, adaptar CÓDIGO
 - "direct_response": true para preguntas simples, saludos, o consultas generales SIN código
 
-REGLA CRÍTICA:
-Si el usuario dice "corrigelo", "modificalo", "cambialo", "arreglalo", "solucionalo" o similares en referencia a código:
-- "code_analysis": true
+REGLA CRÍTICA #1 - MODIFICACIÓN DE CÓDIGO:
+Si el usuario dice "corrigelo", "modificalo", "cambialo", "arreglalo", "solucionalo", "haz los cambios", "adapta", "ajusta", "mejora" o similares:
+- "code_analysis": true (siempre)
 - "code_generation": true (OBLIGATORIO - el editor debe ejecutarse para hacer los cambios)
 
-Ejemplo 1 - Solicitud de corrección (DEBE generar código):
+REGLA CRÍTICA #2 - VISIÓN + CÓDIGO:
+Si hay imágenes disponibles Y el usuario pide modificar/cambiar/actualizar código:
+- "vision": true (analizar las imágenes)
+- "code_analysis": true (analizar el código)
+- "code_generation": true (GENERAR el código modificado - OBLIGATORIO)
+- El flujo debe ser: vision → code → editor
+
+Ejemplo 1 - Solo visión (solo analizar imagen, no modificar código):
+Usuario: "¿qué ves en la pantalla?"
+Salida: {"vision": true, "code_analysis": false, "code_generation": false, "direct_response": false, "reasoning": "Solo pregunta sobre contenido visual, no solicita cambios de código"}
+
+Ejemplo 2 - Visión + modificación de código (CASO CRÍTICO):
+Usuario: "En la captura se ven los competidores. Necesito que muestre desde qué puerta salieron - haz los cambios necesarios."
+Salida: {"vision": true, "code_analysis": true, "code_generation": true, "direct_response": false, "reasoning": "Usuario muestra imagen Y pide modificar código para mostrar nueva información. Requiere visión + análisis + generación de código"}
+
+Ejemplo 3 - Solicitud de corrección sin imagen:
 Usuario: "hay un error en tracker.py, corrige las importaciones"
 Salida: {"vision": false, "code_analysis": true, "code_generation": true, "direct_response": false, "reasoning": "El usuario reporta un error y pide corrección, requiere análisis y generación de código modificado"}
 
-Ejemplo 2 - Solo análisis (NO generar código):
+Ejemplo 4 - Solo análisis (NO generar código):
 Usuario: "explica qué hace este archivo"
 Salida: {"vision": false, "code_analysis": true, "code_generation": false, "direct_response": false, "reasoning": "El usuario solo pide explicación, no modificación"}
 
@@ -141,11 +156,21 @@ IMPORTANTE:
         # Keywords específicas para generación/corrección de código
         generation_keywords = [
             "corrige", "corrigelo", "corregir", "soluciona", "solucionalo",
-            "arregla", "arreglalo", "repara", "reparar", "haz", "genera",
-            "escribe", "escribir", "añade", "agrega", "quita", "elimina",
-            "borra", "modifica esto", "cambia esto"
+            "arregla", "arreglalo", "repara", "reparar", "haz", "haz los cambios",
+            "haz los cambios necesarios", "genera", "escribe", "escribir",
+            "añade", "agrega", "quita", "elimina", "borra", "modifica esto",
+            "cambia esto", "adapta", "adaptar", "ajusta", "ajustar",
+            "mejora", "mejorar", "optimiza", "optimizar", "implementa",
+            "implementar", "actualiza", "actualizar", "refactoriza", "refactorizar",
+            "muestra", "mostrar", "necesito que", "necesita que", "debe mostrar",
+            "debería mostrar"
         ]
         needs_generation = any(kw in prompt_lower for kw in generation_keywords)
+
+        # Si pide hacer cambios/trabajo sobre algo mostrado en imagen
+        if has_image and any(kw in prompt_lower for kw in ["cambios", "necesito", "haz", "adapta", "ajusta", "muestra"]):
+            needs_code = True
+            needs_generation = True
 
         # Si pide corregir errores, forzar ambos análisis y generación
         if needs_generation:
