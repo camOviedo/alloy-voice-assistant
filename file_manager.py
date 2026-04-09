@@ -69,13 +69,13 @@ class ProjectFileManager:
         original_lines = len(original_content.splitlines())
         new_lines = len(new_content.splitlines())
 
-        if new_lines < original_lines * 0.5:
-            # El código nuevo tiene menos del 50% de líneas del original
-            warning = f"⚠️ ADVERTENCIA: El código propuesto ({new_lines} líneas) es mucho más corto que el original ({original_lines} líneas)."
+        if new_lines < original_lines * 0.1:
+            # El código nuevo tiene menos del 10% de líneas del original - probablemente un error
+            warning = f"⚠️ ADVERTENCIA: El código propuesto ({new_lines} líneas) es demasiado corto vs el original ({original_lines} líneas)."
             print(f"\n{'='*60}")
             print(warning)
-            print("Esto puede indicar que el LLM devolvió solo un fragmento en lugar del archivo completo.")
-            print("El cambio NO se ha guardado. Intenta nuevamente especificando 'archivo completo'.")
+            print("Esto puede indicar un error en la generación del código.")
+            print("El cambio NO se ha guardado.")
             print(f"{'='*60}\n")
             return False, f"Código propuesto incompleto: {new_lines} vs {original_lines} líneas. El cambio fue rechazado automáticamente."
 

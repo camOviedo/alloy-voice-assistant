@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
 from agents.memory import EditorMemory
+from config import AGENT_EDITOR_NUM_CTX, AGENT_EDITOR_NUM_PREDICT
 
 
 class EditorAgent:
@@ -28,41 +29,70 @@ class EditorAgent:
         self.model_name = model_name
         self.llm = ChatOllama(
             model=model_name,
-            temperature=0.6,
-            num_ctx=65536,  # Mayor contexto para archivos completos
-            num_predict=32768,
-            repeat_penalty=1.1,
-            top_p=0.9
+            temperature=0.1,  # Bajo para máxima determinación
+            num_ctx=AGENT_EDITOR_NUM_CTX,
+            num_predict=AGENT_EDITOR_NUM_PREDICT,
+            repeat_penalty=1.2,
+            top_p=0.5  # Bajo para seguir reglas estrictamente
         )
         self.memory = EditorMemory(memory_dir)
 
-        self.system_prompt = """Eres un agente editor de código experto.
+        # Usar modo parche para archivos grandes (>200 líneas) para ahorrar tokens
+        self.use_patch_mode = True
 
-TU MISIÓN:
-Generar el CÓDIGO COMPLETO modificado según los requerimientos.
+        self.system_prompt_full = """You are a CODE GENERATION TOOL.
 
-REGLAS ABSOLUTAS - OBLIGATORIAS:
-1. DEVUELVE SIEMPRE EL ARCHIVO COMPLETO - NUNCA solo fragmentos
-2. Incluye TODAS las líneas: imports, clases, funciones, métodos
-3. NO uses "..." o "# resto del código" o "# código sin cambios"
-4. NO hagas resúmenes del código faltante
-5. El código debe estar en UN SOLO bloque markdown ```python ... ```
-6. Explica los cambios DESPUÉS del bloque de código, no antes
-7. DEBES hacer cambios REALES al código - no devuelvas el código sin modificar
-8. Si la solicitud implica añadir nueva funcionalidad, implementa métodos/clases nuevas
-9. Si la solicitud implica modificar comportamiento, cambia la lógica existente
+YOUR ONLY PURPOSE: Output complete, modified source code files.
 
-FORMATO DE RESPUESTA CORRECTO:
-```python
-# [Todo el código del archivo, línea por línea]
-# Incluyendo imports, clases, funciones, TODO
-# NO omitas NADA
-```
+STRICT RULES:
+1. OUTPUT ONLY CODE INSIDE THE MARKDOWN BLOCK
+2. NO introductions, NO explanations, NO summaries
+3. ALWAYS return the ENTIRE file - every single line
+4. NEVER use placeholders like "..." or "# rest of code"
+5. The code MUST be inside ONE markdown block: ```python ... ```
 
-**Resumen de cambios:**
-- Lista breve de modificaciones realizadas
+Generate the complete file NOW."""
 
-ADVERTENCIA CRÍTICA: Si devuelves el código sin cambios (idéntico al original), el sistema RECHAZARÁ automáticamente tu respuesta y se perderá el trabajo. DEBES implementar las modificaciones solicitadas."""
+        self.system_prompt_patch = """You are a CODE PATCH TOOL. Not a chatbot. A TOOL.
+
+YOUR ONLY PURPOSE: Output code changes as SEARCH/REPLACE blocks.
+
+STRICT RULES - VIOLATING ANY RULE WILL BREAK THE SYSTEM:
+1. Use EXACTLY this format for each change:
+   <<<<<<< SEARCH
+   [existing code to find - EXACT match required]
+   =======
+   [new code to replace with]
+   >>>>>>> REPLACE
+
+2. Each SEARCH block must match EXACTLY the original code (including whitespace)
+3. NO introductions like "Here are the changes"
+4. NO explanations after the blocks
+5. NO apologies like "Sorry, I cannot..."
+6. Output ONLY the SEARCH/REPLACE blocks, nothing else
+7. For NEW code additions, use SEARCH with empty line or context line
+8. Make ALL requested changes in one response
+
+EXAMPLE OF CORRECT OUTPUT:
+<<<<<<< SEARCH
+import os
+import sys
+=======
+import os
+import sys
+import json
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+def hello():
+    print("Hello")
+=======
+def hello():
+    print("Hello World")
+    return 0
+>>>>>>> REPLACE
+
+VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks causes SYSTEM FAILURE. You are a TOOL. Generate patches NOW."""
 
     def generate_modified_code(
         self,
@@ -122,34 +152,62 @@ ADVERTENCIA CRÍTICA: Si devuelves el código sin cambios (idéntico al original
                 image_analysis
             ])
 
-        context_parts.extend([
-            "",
-            "INSTRUCCIÓN FINAL:",
-            "Genera el archivo COMPLETO con las modificaciones solicitadas.",
-            f"El archivo tiene {len(original_code.splitlines())} líneas - tu respuesta debe tener EXACTAMENTE ese orden de magnitud.",
-            "NO omitas ninguna línea. Incluye TODO el código."
-        ])
+        # Decidir modo: completo o parche
+        original_lines = len(original_code.splitlines())
+        use_patch = self.use_patch_mode and original_lines > 150  # Usar parche para archivos grandes
+
+        if use_patch:
+            context_parts.extend([
+                "",
+                "INSTRUCCIÓN FINAL:",
+                "Genera SOLO los cambios necesarios usando bloques SEARCH/REPLACE.",
+                f"El archivo tiene {original_lines} líneas - NO reescribas todo, solo las partes que cambian.",
+                "Cada bloque SEARCH debe coincidir EXACTAMENTE con el código original."
+            ])
+            system_prompt = self.system_prompt_patch
+        else:
+            context_parts.extend([
+                "",
+                "INSTRUCCIÓN FINAL:",
+                "Genera el archivo COMPLETO con las modificaciones solicitadas.",
+                f"El archivo tiene {original_lines} líneas - tu respuesta debe tener EXACTAMENTE ese orden de magnitud.",
+                "NO omitas ninguna línea. Incluye TODO el código."
+            ])
+            system_prompt = self.system_prompt_full
 
         messages = [
-            SystemMessage(content=self.system_prompt),
+            SystemMessage(content=system_prompt),
             HumanMessage(content="\n".join(context_parts))
         ]
 
         try:
-            print(f"[EditorAgent] Generando código para {filename} con {self.model_name}...")
+            mode_str = "parches" if use_patch else "código completo"
+            print(f"[EditorAgent] Generando {mode_str} para {filename} con {self.model_name}...")
             response = self.llm.invoke(messages)
             full_response = response.content
 
-            # Extraer el código
-            proposed_code = self._extract_code(full_response)
+            if use_patch:
+                # Extraer y aplicar parches
+                patches = self._extract_patches(full_response)
+                if patches:
+                    proposed_code = self._apply_patches(original_code, patches)
+                    print(f"[EditorAgent] Aplicados {len(patches)} parches")
+                else:
+                    # Fallback: intentar extraer código completo
+                    proposed_code = self._extract_code(full_response)
+            else:
+                # Extraer código completo
+                proposed_code = self._extract_code(full_response)
 
             if proposed_code:
                 # Validar que no sea significativamente más corto
                 original_lines = len(original_code.splitlines())
                 new_lines = len(proposed_code.splitlines())
 
-                if new_lines < original_lines * 0.5:
-                    # Código posiblemente incompleto
+                # En modo parche, la validación es diferente
+                min_ratio = 0.3 if use_patch else 0.5
+                if new_lines < original_lines * min_ratio and not use_patch:
+                    # Código posiblemente incompleto (solo en modo completo)
                     return {
                         "filename": filename,
                         "code": proposed_code,
@@ -159,7 +217,8 @@ ADVERTENCIA CRÍTICA: Si devuelves el código sin cambios (idéntico al original
                         "validation": {
                             "original_lines": original_lines,
                             "new_lines": new_lines,
-                            "ratio": new_lines / original_lines if original_lines > 0 else 0
+                            "ratio": new_lines / original_lines if original_lines > 0 else 0,
+                            "mode": "patch" if use_patch else "full"
                         }
                     }
 
@@ -341,14 +400,32 @@ ADVERTENCIA CRÍTICA: Si devuelves el código sin cambios (idéntico al original
         }
 
     def _extract_code(self, text: str) -> Optional[str]:
-        """
-        Extrae el primer bloque de código Markdown del texto.
-        """
+        """Extrae el primer bloque de código Markdown del texto."""
         pattern = r"```(?:python)?\n(.*?)```"
         match = re.search(pattern, text, re.DOTALL)
         if match:
             return match.group(1).strip()
         return None
+
+    def _extract_patches(self, text: str) -> list:
+        """Extrae bloques SEARCH/REPLACE del texto."""
+        pattern = r'<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE'
+        matches = re.findall(pattern, text, re.DOTALL)
+        return [(m[0].rstrip('\n'), m[1].rstrip('\n')) for m in matches]
+
+    def _apply_patches(self, original_code: str, patches: list) -> str:
+        """Aplica parches al código original."""
+        result = original_code
+        for search, replace in patches:
+            # Buscar el código exacto
+            if search in result:
+                result = result.replace(search, replace, 1)
+            else:
+                # Intentar con flexibilidad de whitespace al inicio/final
+                search_stripped = search.strip()
+                if search_stripped in result:
+                    result = result.replace(search_stripped, replace, 1)
+        return result
 
     def get_modification_history(self, filename: str = None) -> list:
         """Obtiene el historial de modificaciones."""

@@ -20,8 +20,12 @@ os.makedirs(CAPTURES_PATH, exist_ok=True)
 AGENT_COORDINATOR_MODEL = "qwen2.5:3b"  # Pequeño, rápido, texto-only
 AGENT_VISION_MODEL = "qwen3-vl:8b-vision"     # Vision-capable
 AGENT_CODE_MODEL = "qwen2.5-coder:14b"       # Analisis de codigo
-AGENT_EDITOR_MODEL = "qwen2.5-coder:14b"  # Generacion de codigo
+AGENT_EDITOR_MODEL = "qwen2.5-coder:14b"  # Generacion de codigo - 32b para mejor calidad
 AGENT_REVIEWER_MODEL = "qwen2.5-coder:14b"  # Revision de codigo generado
+
+# Configuración de contexto para el editor (ajustar según VRAM disponible)
+AGENT_EDITOR_NUM_CTX = 16384      # Contexto total (input + output)
+AGENT_EDITOR_NUM_PREDICT = 16384  # Tokens máximos para la respuesta
 
 # Configuración del revisor
 MAX_REVIEW_ITERATIONS = 3  # Máximo de iteraciones de revisión para evitar loops
