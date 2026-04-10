@@ -17,7 +17,9 @@ from config import (
     DEFAULT_MONITOR,
     DEFAULT_SCALE_DISPLAY,
     CAPTURES_PATH,
+    AUTO_CROP_VIDEO,
 )
+from image_cropper import crop_to_video, detect_video_region
 
 
 def capture_single_screenshot(
@@ -25,7 +27,8 @@ def capture_single_screenshot(
     max_width=DEFAULT_MAX_WIDTH,
     jpeg_quality=DEFAULT_JPEG_QUALITY,
     save_to_disk=True,
-    captures_path=CAPTURES_PATH
+    captures_path=CAPTURES_PATH,
+    auto_crop=AUTO_CROP_VIDEO
 ):
     """
     Captura una única screenshot y opcionalmente la guarda en disco.
@@ -36,9 +39,10 @@ def capture_single_screenshot(
         jpeg_quality: calidad JPEG
         save_to_disk: si True, guarda la imagen en disco
         captures_path: ruta donde guardar la imagen
+        auto_crop: si True, detecta y recorta región de video automáticamente
         
     Returns:
-        tuple: (image_base64, file_path) - imagen en base64 y ruta del archivo
+        tuple: (image_base64, file_path, crop_metadata) - imagen en base64, ruta y metadata del recorte
     """
     with mss.mss() as sct:
         # Verificar monitor válido
@@ -51,6 +55,16 @@ def capture_single_screenshot(
         screenshot = sct.grab(monitor_region)
         img = np.array(screenshot)
         frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        
+        h, w = frame.shape[:2]
+        
+        # Auto-crop: detectar y recortar región de video
+        crop_metadata = {'cropped': False}
+        if auto_crop:
+            cropped_frame, region, crop_metadata = crop_to_video(frame, padding=10)
+            if crop_metadata['cropped']:
+                frame = cropped_frame
+                print(f"✂️  Auto-crop aplicado: {crop_metadata['reduction_percent']}% reducción, ~{crop_metadata['estimated_token_savings']} tokens ahorrados")
         
         h, w = frame.shape[:2]
         
@@ -82,22 +96,25 @@ def capture_single_screenshot(
                 f.write(buffer)
             print(f"💾 Imagen guardada: {file_path}")
         
-        return image_base64, file_path
+        return image_base64, file_path, crop_metadata
 
 
 class ScreenStream:
     def __init__(self, monitor=DEFAULT_MONITOR, scale_display=DEFAULT_SCALE_DISPLAY,
-                 max_width=DEFAULT_MAX_WIDTH, jpeg_quality=DEFAULT_JPEG_QUALITY):
+                 max_width=DEFAULT_MAX_WIDTH, jpeg_quality=DEFAULT_JPEG_QUALITY,
+                 auto_crop=AUTO_CROP_VIDEO):
         """
         monitor: índice del monitor a capturar (1 = principal, 2 = secundario, etc.)
         scale_display: factor de escala para la ventana de previsualización
         max_width: ancho máximo en píxeles para la imagen enviada al LLM (reduce tokens)
         jpeg_quality: calidad JPEG (menor = menos tokens pero más compresión)
+        auto_crop: si True, detecta y recorta región de video automáticamente
         """
         self.monitor_index = monitor
         self.scale_display = scale_display
         self.max_width = max_width
         self.jpeg_quality = jpeg_quality
+        self.auto_crop = auto_crop
         self.frame = None
         self.running = False
         self.lock = Lock()
@@ -176,12 +193,20 @@ class ScreenStream:
         Captura el frame actual del stream y lo guarda en disco.
         
         Returns:
-            tuple: (image_base64, file_path) - imagen en base64 y ruta del archivo
+            tuple: (image_base64, file_path, crop_metadata) - imagen en base64, ruta y metadata del recorte
         """
         with self.lock:
             if self.frame is None:
-                return None, None
+                return None, None, None
             frame = self.frame.copy()
+        
+        # Auto-crop: detectar y recortar región de video
+        crop_metadata = {'cropped': False}
+        if self.auto_crop:
+            cropped_frame, region, crop_metadata = crop_to_video(frame, padding=10)
+            if crop_metadata['cropped']:
+                frame = cropped_frame
+                print(f"✂️  Frame auto-crop: {crop_metadata['reduction_percent']}% reducción, ~{crop_metadata['estimated_token_savings']} tokens ahorrados")
         
         h, w = frame.shape[:2]
         
@@ -213,7 +238,7 @@ class ScreenStream:
                 f.write(buffer)
             print(f"💾 Frame guardado: {file_path}")
         
-        return image_base64, file_path
+        return image_base64, file_path, crop_metadata
 
     def stop(self):
         self.running = False

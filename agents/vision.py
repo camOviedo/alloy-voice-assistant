@@ -6,10 +6,13 @@ import base64
 import os
 from typing import Dict, Any, Optional
 
+import cv2
+import numpy as np
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
 from agents.memory import VisionMemory
+from image_cropper import crop_to_video
 
 
 class VisionAgent:
@@ -34,46 +37,79 @@ class VisionAgent:
         )
         self.memory = VisionMemory(memory_dir)
 
-        self.system_prompt = """Eres un agente de visión especializado en analizar pantallas, interfaces y código visible en imágenes.
+        self.system_prompt = """Eres un agente de visión especializado en analizar reproducciones de video y pantallas de aplicaciones.
+
+CONTEXTO DE LAS IMÁGENES:
+Las imágenes que recibas son screenshots de reproducción de video en tiempo real. El área visible muestra:
+- Contenido de video en reproducción (caballos, carreras, eventos deportivos)
+- Interfaces de reproductores de video (VLC, navegador, apps de streaming)
+- Posibles overlays de información (números de puerta, tiempos, nombres)
 
 TU MISIÓN:
-1. Extraer TEXTO relevante visible en la imagen (errores, logs, código, UI)
-2. Identificar ELEMENTOS visuales importantes (ventanas, botones, gráficos)
-3. Describir el CONTEXTO (¿qué aplicación? ¿qué está pasando?)
-4. Detectar ERRORES o problemas visibles
+1. Extraer TEXTO relevante visible en la imagen (números de puerta, nombres, datos de carrera)
+2. Identificar ELEMENTOS visuales importantes (caballos, jinetes, pistas, marcadores)
+3. Describir el CONTEXTO del video (¿qué se está reproduciendo? ¿qué información se muestra?)
+4. Detectar ERRORES o anomalías en la reproducción o visualización
 
 FORMATO DE SALIDA:
 Devuelve tu análisis en este formato estructurado:
 
 **Texto extraído:**
-- Lista de textos importantes encontrados
+- Lista de textos importantes encontrados (números, nombres, datos)
 
 **Elementos visuales:**
-- Descripción de UI, ventanas, elementos clave
+- Descripción de lo que se ve en el video (caballos, escena, acción)
+- UI del reproductor si es visible
 
-**Análisis de código (si aplica):**
-- Si hay código visible, resume qué muestra
-- Identifica errores de sintaxis o lógica visibles
+**Análisis de datos:**
+- Si hay números de puerta, posiciones, tiempos - organizarlos claramente
+- Identificar patrones o información relevante del evento
 
 **Contexto:**
-- ¿Qué aplicación/software se ve?
-- ¿Qué acción está realizando el usuario?
-- ¿Hay algún error o problema evidente?
+- ¿Qué tipo de video se está reproduciendo?
+- ¿Hay algún problema técnico visible?
+- ¿Qué información relevante puede ser útil para el proyecto?
 
 REGLAS:
-- Sé CONCISO pero completo
-- Prioriza información útil para debugging o desarrollo
-- Si hay errores visibles, descríbelos detalladamente"""
+- Sé CONCISO - el análisis será usado para tomar decisiones de código
+- Prioriza información útil para el sistema de seguimiento de caballos
+- Si hay datos de carrera (puertas, posiciones), descríbelos estructuradamente
+- Ignora elementos irrelevantes del escritorio/fuera del video"""
 
     def _compute_image_hash(self, image_b64: str) -> str:
         """Computa un hash simple de la imagen para caché."""
         return self.memory.compute_hash(image_b64[:1000])  # Usar primeros 1000 chars para velocidad
 
-    def _load_image_from_file(self, image_path: str) -> str:
-        """Carga una imagen desde archivo y la codifica en base64."""
-        with open(image_path, 'rb') as f:
-            image_bytes = f.read()
-        return base64.b64encode(image_bytes).decode('utf-8')
+    def _load_image_from_file(self, image_path: str, auto_crop: bool = True) -> str:
+        """
+        Carga una imagen desde archivo y la codifica en base64.
+        
+        Args:
+            image_path: Ruta al archivo de imagen
+            auto_crop: Si True, aplica recorte automático de región de video
+        
+        Returns:
+            Imagen codificada en base64
+        """
+        # Cargar imagen con OpenCV para procesamiento
+        frame = cv2.imread(image_path)
+        
+        if frame is None:
+            # Fallback: cargar como bytes si OpenCV falla
+            with open(image_path, 'rb') as f:
+                image_bytes = f.read()
+            return base64.b64encode(image_bytes).decode('utf-8')
+        
+        # Aplicar recorte automático si está habilitado
+        if auto_crop:
+            cropped_frame, region, metadata = crop_to_video(frame, padding=10)
+            if metadata.get('cropped', False):
+                frame = cropped_frame
+                print(f"[VisionAgent] ✂️ Recorte aplicado: {metadata['reduction_percent']}% reducción, ~{metadata['estimated_token_savings']} tokens ahorrados")
+        
+        # Codificar a JPEG y luego base64
+        _, buffer = cv2.imencode('.jpg', frame)
+        return base64.b64encode(buffer).decode('utf-8')
 
     def analyze_image(self, image_b64: str = None, image_path: str = None, context_prompt: str = None) -> Dict[str, Any]:
         """

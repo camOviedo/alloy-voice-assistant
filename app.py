@@ -733,8 +733,51 @@ async def process_with_workflow(prompt: str, force_filename: str = None):
     # FUERA DEL PASO PRINCIPAL - Enviar mensajes de resultado
     # ============================================================
 
-    # Caso 1: Editor generó código
-    if has_editor_result:
+    # Caso 0: Editor generó código multi-archivo (cascada)
+    if has_editor_result and "results" in editor_result:
+        results = editor_result["results"]
+        successful_files = {f: r for f, r in results.items() if r.get("success")}
+        
+        if successful_files:
+            await cl.Message(
+                content=f"✅ **Cambios generados en cascada para {len(successful_files)} archivos**"
+            ).send()
+            
+            # Mostrar lista de archivos afectados
+            files_list = "\n".join([f"• `{f}`" for f in successful_files.keys()])
+            await cl.Message(content=f"📁 **Archivos modificados:**\n{files_list}").send()
+            
+            # Guardar propuestas pendientes en sesión
+            pending_proposals = {}
+            for fname, result in successful_files.items():
+                success, proposal_id = fm.propose_change(
+                    fname,
+                    result["code"],
+                    description=prompt[:100]
+                )
+                if success:
+                    pending_proposals[proposal_id] = fname
+            
+            cl.user_session.set("pending_proposals", pending_proposals)
+            
+            # Botones para aprobar/rechazar todos o revisar individualmente
+            actions = [
+                cl.Action(name="approve_all_changes", label=f"✅ Aprobar todos ({len(pending_proposals)})", 
+                         payload={"proposals": list(pending_proposals.keys())}),
+                cl.Action(name="review_changes", label="🔍 Revisar uno por uno", 
+                         payload={"proposals": list(pending_proposals.keys())}),
+                cl.Action(name="reject_all_changes", label="❌ Rechazar todos", 
+                         payload={"proposals": list(pending_proposals.keys())}),
+            ]
+            await cl.Message(
+                content=f"**¿Deseas aplicar estos cambios?**\n\nIDs: {', '.join([f'`{p[:8]}...`' for p in pending_proposals.keys()])}",
+                actions=actions
+            ).send()
+        else:
+            await cl.Message(content="❌ No se pudieron generar cambios para ningún archivo").send()
+
+    # Caso 1: Editor generó código simple (un archivo)
+    elif has_editor_result:
         pending = cl.user_session.get("pending_proposal")
         proposed_code = pending["proposed_code"]
         filename = pending["filename"]
@@ -847,3 +890,76 @@ async def process_with_workflow(prompt: str, force_filename: str = None):
 
     # Limpiar capturas después de usarlas
     cl.user_session.set("captures", [])
+
+
+@cl.action_callback("approve_all_changes")
+async def on_approve_all_changes(action):
+    """Aprueba todos los cambios pendientes en cascada"""
+    proposals = action.payload.get("proposals", [])
+    fm = cl.user_session.get("file_manager")
+    
+    results = []
+    for proposal_id in proposals:
+        success, result = fm.approve_change(proposal_id)
+        status = "✅" if success else "❌"
+        results.append(f"{status} {proposal_id[:8]}...: {result}")
+    
+    await cl.Message(
+        content=f"**Resultado de aprobación masiva:**\n\n" + "\n".join(results)
+    ).send()
+
+
+@cl.action_callback("reject_all_changes")
+async def on_reject_all_changes(action):
+    """Rechaza todos los cambios pendientes en cascada"""
+    proposals = action.payload.get("proposals", [])
+    fm = cl.user_session.get("file_manager")
+    
+    results = []
+    for proposal_id in proposals:
+        success, result = fm.reject_change(proposal_id)
+        status = "🗑️" if success else "❌"
+        results.append(f"{status} {proposal_id[:8]}...: {result}")
+    
+    await cl.Message(
+        content=f"**Resultado de rechazo masivo:**\n\n" + "\n".join(results)
+    ).send()
+
+
+@cl.action_callback("review_changes")
+async def on_review_changes(action):
+    """Muestra cada cambio individualmente para revisión"""
+    proposals = action.payload.get("proposals", [])
+    fm = cl.user_session.get("file_manager")
+    pending = fm.get_pending_changes()
+    
+    await cl.Message(
+        content=f"🔍 **Revisión individual de {len(proposals)} cambios:**"
+    ).send()
+    
+    for i, proposal_id in enumerate(proposals, 1):
+        if proposal_id in pending:
+            change = pending[proposal_id]
+            diff = fm.generate_diff(proposal_id)
+            
+            code_preview = change['proposed'][:800]
+            truncated = len(change['proposed']) > 800
+            
+            content = f"""**Cambio {i}/{len(proposals)}:** `{proposal_id[:12]}...`
+
+📄 **Archivo:** `{change['file']}`
+📝 {change.get('description', 'Sin descripción')[:80]}
+
+**Vista previa:**
+```python
+{code_preview}
+```
+{"*(Código truncado...)*" if truncated else ""}
+"""
+            
+            actions = [
+                cl.Action(name="approve_change", label="✅ Aprobar", payload={"value": proposal_id}),
+                cl.Action(name="reject_change", label="❌ Rechazar", payload={"value": proposal_id}),
+            ]
+            
+            await cl.Message(content=content, actions=actions).send()

@@ -444,6 +444,230 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks causes SYSTEM FAIL
             "successful_files": sum(1 for r in results.values() if r.get("success"))
         }
 
+    def generate_multi_file_changes(
+        self,
+        files_content: Dict[str, str],
+        user_request: str,
+        cascade_analysis: Dict[str, Any],
+        code_analysis: str = None
+    ) -> Dict[str, Any]:
+        """
+        Genera modificaciones coordinadas para múltiples archivos con dependencias.
+        
+        Este método es especializado para el caso "cascada de cambios" donde
+        modificar un archivo afecta a otros que dependen de él.
+        
+        Args:
+            files_content: Dict {ruta: contenido} de TODOS los archivos a modificar
+            user_request: Solicitud del usuario
+            cascade_analysis: Resultado de analyze_with_cascade_detection del CodeAgent
+            code_analysis: Análisis técnico opcional
+            
+        Returns:
+            Dict con código generado para cada archivo de forma coordinada
+        """
+        if not files_content:
+            return {"success": False, "error": "No hay archivos para modificar"}
+        
+        target_file = cascade_analysis.get('target_file')
+        dependent_files = cascade_analysis.get('dependent_files', [])
+        
+        print(f"[EditorAgent] Generando cambios en cascada para {len(files_content)} archivos")
+        print(f"[EditorAgent] Archivo principal: {target_file}")
+        print(f"[EditorAgent] Archivos dependientes: {[d['file'] for d in dependent_files]}")
+        
+        # Construir contexto de cascada para el prompt
+        cascade_context = []
+        cascade_context.append("=== CONTEXTO DE CAMBIOS EN CASCADA ===")
+        cascade_context.append(f"Archivo principal a modificar: {target_file}")
+        cascade_context.append("")
+        cascade_context.append("Archivos que dependen del principal y necesitan actualización:")
+        for dep in dependent_files:
+            cascade_context.append(f"  - {dep['file']}")
+            if dep['dependencies'].get('imports'):
+                cascade_context.append(f"    Importa: {', '.join(dep['dependencies']['imports'])}")
+            if dep['dependencies'].get('function_calls'):
+                cascade_context.append(f"    Llama a: {', '.join(set(dep['dependencies']['function_calls']))}")
+            if dep['dependencies'].get('class_instances'):
+                cascade_context.append(f"    Instancia: {', '.join(set(dep['dependencies']['class_instances']))}")
+        cascade_context.append("")
+        cascade_context.append("=== INSTRUCCIÓN DE COORDINACIÓN ===")
+        cascade_context.append("Debes generar cambios que mantengan la compatibilidad entre archivos.")
+        cascade_context.append("Si cambias la firma de una función en el archivo principal,")
+        cascade_context.append("actualiza TODAS las llamadas a esa función en los archivos dependientes.")
+        cascade_context.append("")
+        
+        # Procesar todos los archivos en una sola llamada para mantener coherencia
+        # Construir prompt multi-archivo
+        context_parts = [
+            "=== MODIFICACIÓN MULTI-ARCHIVO COORDINADA ===",
+            "",
+            "\n".join(cascade_context),
+            "",
+            "ARCHIVOS A MODIFICAR:",
+            ""
+        ]
+        
+        # Añadir contenido de cada archivo
+        for filename, content in files_content.items():
+            is_target = (filename == target_file)
+            prefix = "[PRINCIPAL]" if is_target else "[DEPENDIENTE]"
+            context_parts.extend([
+                f"--- {prefix} {filename} ---",
+                f"Total líneas: {len(content.splitlines())}",
+                "```python",
+                content[:2000],  # Limitar para no saturar contexto
+                "```",
+                ""
+            ])
+        
+        context_parts.extend([
+            "SOLICITUD DEL USUARIO:",
+            user_request,
+            "",
+            "INSTRUCCIÓN FINAL:",
+            "Genera los cambios para TODOS los archivos listados.",
+            "Usa el formato SEARCH/REPLACE para cada archivo.",
+            "Asegúrate de que los cambios sean coherentes entre archivos.",
+            "Especialmente: si cambias una función, actualiza sus llamadas."
+        ])
+        
+        if code_analysis:
+            context_parts.extend([
+                "",
+                "ANÁLISIS TÉCNICO:",
+                code_analysis
+            ])
+        
+        messages = [
+            SystemMessage(content=self.system_prompt_patch),
+            HumanMessage(content="\n".join(context_parts))
+        ]
+        
+        try:
+            print(f"[EditorAgent] Generando cambios coordinados con {self.model_name}...")
+            response = self.llm.invoke(messages)
+            full_response = response.content
+            
+            # Extraer parches por archivo
+            file_changes = self._extract_patches_by_file(full_response, list(files_content.keys()))
+            
+            # Aplicar parches a cada archivo
+            results = {}
+            for filename, original_code in files_content.items():
+                patches = file_changes.get(filename, [])
+                
+                if patches:
+                    proposed_code = self._apply_patches(original_code, patches)
+                    
+                    # Validar
+                    if proposed_code.strip() == original_code.strip():
+                        results[filename] = {
+                            "filename": filename,
+                            "code": proposed_code,
+                            "success": False,
+                            "error": "Código generado idéntico al original",
+                            "patches_applied": len(patches)
+                        }
+                    else:
+                        # Guardar en memoria
+                        mod_id = self.memory.add_modification(
+                            filename,
+                            original_code,
+                            proposed_code,
+                            user_request[:100]
+                        )
+                        
+                        results[filename] = {
+                            "filename": filename,
+                            "code": proposed_code,
+                            "success": True,
+                            "modification_id": mod_id,
+                            "patches_applied": len(patches),
+                            "validation": {
+                                "original_lines": len(original_code.splitlines()),
+                                "new_lines": len(proposed_code.splitlines())
+                            }
+                        }
+                else:
+                    results[filename] = {
+                        "filename": filename,
+                        "code": original_code,
+                        "success": False,
+                        "error": "No se encontraron parches para este archivo"
+                    }
+            
+            # Verificar éxito
+            all_success = all(r.get("success") for r in results.values())
+            any_success = any(r.get("success") for r in results.values())
+            
+            return {
+                "success": any_success,
+                "all_success": all_success,
+                "results": results,
+                "total_files": len(files_content),
+                "successful_files": sum(1 for r in results.values() if r.get("success")),
+                "full_response": full_response
+            }
+            
+        except Exception as e:
+            print(f"[EditorAgent] Error en generación multi-archivo: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e),
+                "results": {}
+            }
+
+    def _extract_patches_by_file(self, text: str, expected_files: list) -> Dict[str, list]:
+        """
+        Extrae bloques SEARCH/REPLACE organizados por archivo.
+        
+        Busca formato:
+        ### Archivo: filename.py
+        <<<<<<< SEARCH
+        ...
+        =======
+        ...
+        >>>>>>> REPLACE
+        """
+        import re
+        
+        patches_by_file = {f: [] for f in expected_files}
+        
+        # Buscar secciones por archivo
+        file_pattern = r'###\s*(?:Archivo|File):?\s*(\S+\.py)\s*\n([\s\S]*?)(?=###\s*(?:Archivo|File):?|\Z)'
+        file_matches = re.findall(file_pattern, text)
+        
+        for filename, content in file_matches:
+            # Normalizar nombre de archivo
+            clean_filename = filename.strip()
+            
+            # Buscar parches SEARCH/REPLACE en esta sección
+            patch_pattern = r'<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE'
+            patches = re.findall(patch_pattern, content, re.DOTALL)
+            
+            # Filtrar parches válidos
+            valid_patches = []
+            for search, replace in patches:
+                search_clean = search.rstrip('\n')
+                replace_clean = replace.rstrip('\n')
+                if search_clean != replace_clean:
+                    valid_patches.append((search_clean, replace_clean))
+            
+            if clean_filename in patches_by_file:
+                patches_by_file[clean_filename] = valid_patches
+        
+        # Si no encontramos formato estructurado, intentar extraer todo
+        if not any(patches_by_file.values()):
+            # Extraer todos los parches y asignar al primer archivo (fallback)
+            all_patches = self._extract_patches(text)
+            if all_patches and expected_files:
+                patches_by_file[expected_files[0]] = all_patches
+        
+        return patches_by_file
+
     def _extract_code(self, text: str) -> Optional[str]:
         """Extrae el primer bloque de código Markdown del texto."""
         pattern = r"```(?:python)?\n(.*?)```"

@@ -351,6 +351,241 @@ Devuelve tu análisis en secciones claras:
 
         return info
 
+    def find_functions_to_modify(self, code_content: str, user_request: str) -> Dict[str, Any]:
+        """
+        Analiza el código para identificar qué funciones/métodos/clases
+        serán modificados según la solicitud del usuario.
+        
+        Args:
+            code_content: Código fuente del archivo
+            user_request: Solicitud del usuario
+            
+        Returns:
+            Dict con funciones, métodos y clases identificados
+        """
+        import ast
+        
+        try:
+            tree = ast.parse(code_content)
+        except SyntaxError:
+            return {'functions': [], 'classes': [], 'methods': [], 'error': 'Syntax error in code'}
+        
+        functions = []
+        classes = []
+        methods = []
+        
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                # Es una función de módulo (no método)
+                if not any(isinstance(parent, ast.ClassDef) for parent in ast.walk(tree)):
+                    functions.append({
+                        'name': node.name,
+                        'line': node.lineno,
+                        'args': [arg.arg for arg in node.args.args]
+                    })
+            elif isinstance(node, ast.ClassDef):
+                classes.append({
+                    'name': node.name,
+                    'line': node.lineno,
+                    'methods': [
+                        n.name for n in node.body 
+                        if isinstance(n, ast.FunctionDef)
+                    ]
+                })
+                # Extraer métodos de la clase
+                for item in node.body:
+                    if isinstance(item, ast.FunctionDef):
+                        methods.append({
+                            'class': node.name,
+                            'name': item.name,
+                            'line': item.lineno,
+                            'args': [arg.arg for arg in item.args.args]
+                        })
+        
+        return {
+            'functions': functions,
+            'classes': classes,
+            'methods': methods
+        }
+
+    def find_dependent_files(
+        self, 
+        target_file: str, 
+        target_content: str,
+        all_files: Dict[str, str],
+        project_path: str,
+        functions_to_check: Optional[list] = None
+    ) -> Dict[str, Any]:
+        """
+        Busca archivos que dependen del archivo objetivo.
+        
+        Detecta:
+        1. Archivos que importan el módulo objetivo
+        2. Archivos que llaman a funciones del módulo objetivo
+        3. Archivos que instancian clases del módulo objetivo
+        
+        Args:
+            target_file: Nombre del archivo objetivo
+            target_content: Contenido del archivo objetivo
+            all_files: Dict {filename: content} de todos los archivos del proyecto
+            project_path: Ruta raíz del proyecto
+            functions_to_check: Lista de nombres de función a buscar (opcional)
+            
+        Returns:
+            Dict con archivos dependientes y detalles
+        """
+        import ast
+        import os
+        
+        target_module = os.path.splitext(target_file)[0]  # quitar .py
+        
+        dependent_files = []
+        
+        # Extraer nombres de funciones y clases del archivo objetivo si no se proporcionan
+        if not functions_to_check:
+            funcs_data = self.find_functions_to_modify(target_content, "")
+            functions_to_check = [f['name'] for f in funcs_data['functions']]
+            functions_to_check.extend([c['name'] for c in funcs_data['classes']])
+            functions_to_check.extend([m['name'] for m in funcs_data['methods']])
+        
+        for filename, content in all_files.items():
+            if filename == target_file:
+                continue
+            
+            try:
+                tree = ast.parse(content)
+            except SyntaxError:
+                continue
+            
+            dependencies_found = {
+                'imports': [],
+                'function_calls': [],
+                'class_instances': []
+            }
+            
+            for node in ast.walk(tree):
+                # Buscar imports del módulo objetivo
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == target_module or alias.name.startswith(f"{target_module}."):
+                            dependencies_found['imports'].append(alias.name)
+                
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module and (node.module == target_module or 
+                                      node.module.startswith(f"{target_module}")):
+                        imported_names = [alias.name for alias in node.names]
+                        dependencies_found['imports'].extend(imported_names)
+                
+                # Buscar llamadas a funciones del módulo objetivo
+                elif isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name):
+                        if node.func.id in functions_to_check:
+                            dependencies_found['function_calls'].append(node.func.id)
+                    elif isinstance(node.func, ast.Attribute):
+                        # Llamada a método: obj.method()
+                        if node.func.attr in functions_to_check:
+                            dependencies_found['function_calls'].append(node.func.attr)
+                
+                # Buscar instanciación de clases
+                elif isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name):
+                        if node.func.id in [c['name'] for c in 
+                                          self.find_functions_to_modify(target_content, "")['classes']]:
+                            dependencies_found['class_instances'].append(node.func.id)
+            
+            # Si encontramos dependencias, añadir a la lista
+            if any(dependencies_found.values()):
+                dependent_files.append({
+                    'file': filename,
+                    'dependencies': dependencies_found
+                })
+        
+        return {
+            'target_file': target_file,
+            'functions_checked': functions_to_check,
+            'dependent_files': dependent_files,
+            'total_dependent': len(dependent_files)
+        }
+
+    def analyze_with_cascade_detection(
+        self,
+        target_file: str,
+        target_content: str,
+        all_files: Dict[str, str],
+        user_request: str,
+        project_path: str
+    ) -> Dict[str, Any]:
+        """
+        Análisis completo que detecta cambios en cascada necesarios.
+        
+        Combina el análisis del archivo objetivo con la detección de
+        archivos dependientes que también necesitarán modificaciones.
+        
+        Args:
+            target_file: Archivo principal a modificar
+            target_content: Contenido del archivo principal
+            all_files: Todos los archivos del proyecto
+            user_request: Solicitud del usuario
+            project_path: Ruta del proyecto
+            
+        Returns:
+            Dict con análisis y lista de archivos a modificar
+        """
+        # Primero: análisis del archivo objetivo
+        base_analysis = self.analyze_modification_request(
+            target_file,
+            target_content,
+            user_request
+        )
+        
+        # Segundo: detectar qué funciones/clases se modificarán
+        functions_data = self.find_functions_to_modify(target_content, user_request)
+        
+        # Extraer nombres de funciones y métodos que se modificarán
+        modified_names = []
+        if 'suggested_changes' in base_analysis:
+            # Si el análisis sugiere cambios específicos, usar esos
+            for change in base_analysis.get('suggested_changes', []):
+                if 'function' in change:
+                    modified_names.append(change['function'])
+        else:
+            # Fallback: usar todas las funciones públicas
+            modified_names = [f['name'] for f in functions_data['functions'] 
+                           if not f['name'].startswith('_')]
+            modified_names.extend([c['name'] for c in functions_data['classes']])
+        
+        # Tercero: buscar archivos dependientes
+        if modified_names:
+            dependent_analysis = self.find_dependent_files(
+                target_file,
+                target_content,
+                all_files,
+                project_path,
+                modified_names
+            )
+        else:
+            dependent_analysis = {
+                'target_file': target_file,
+                'functions_checked': [],
+                'dependent_files': [],
+                'total_dependent': 0
+            }
+        
+        # Combinar resultados
+        files_to_modify = [target_file]
+        files_to_modify.extend([d['file'] for d in dependent_analysis['dependent_files']])
+        
+        return {
+            'target_file': target_file,
+            'base_analysis': base_analysis,
+            'functions_in_target': functions_data,
+            'modified_names': modified_names,
+            'dependent_files': dependent_analysis['dependent_files'],
+            'all_files_to_modify': files_to_modify,
+            'cascade_required': len(dependent_analysis['dependent_files']) > 0,
+            'success': True
+        }
+
     def discover_related_files(self, target_file: str, project_path: str) -> list:
         """
         Descubre archivos relacionados con el archivo objetivo mediante análisis de imports.

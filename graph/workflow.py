@@ -42,6 +42,11 @@ class AgentState(TypedDict):
     # Contexto de archivos
     target_file: Optional[str]
     file_content: Optional[str]
+    
+    # Soporte multi-archivo (cascada)
+    cascade_analysis: Optional[Dict[str, Any]]  # Análisis de dependencias
+    all_files_content: Optional[Dict[str, str]]  # Todos los archivos a modificar
+    project_path: Optional[str]  # Ruta del proyecto
 
     # Output final
     final_response: str
@@ -298,14 +303,40 @@ class AgentWorkflow:
                 print(f"[Workflow] Web search: {len(results)} resultados encontrados")
                 state["tokens_used"]["web_search"] = len(web_search_results) // 4
 
-        # Análisis con contexto de archivos relacionados si hay project_path disponible
-        # (Por ahora usamos el método simple, se puede extender más tarde)
-        result = self.code.analyze_modification_request(
-            filename=state["target_file"],
-            code_content=state["file_content"],
-            user_request=state["user_prompt"],
-            image_analysis=state.get("vision_analysis")
-        )
+        # Análisis con detección de cascada si hay múltiples archivos disponibles
+        all_files = state.get("all_files_content")
+        project_path = state.get("project_path")
+        
+        if all_files and len(all_files) > 1:
+            print("[Workflow] Detectados múltiples archivos - análisis con detección de cascada...")
+            cascade_result = self.code.analyze_with_cascade_detection(
+                target_file=state["target_file"],
+                target_content=state["file_content"],
+                all_files=all_files,
+                user_request=state["user_prompt"],
+                project_path=project_path or "."
+            )
+            
+            state["cascade_analysis"] = cascade_result
+            
+            if cascade_result.get("cascade_required"):
+                dep_files = cascade_result.get("dependent_files", [])
+                print(f"[Workflow] ⚠️ Cambios en cascada detectados: {len(dep_files)} archivos dependientes")
+                for dep in dep_files:
+                    print(f"  - {dep['file']}")
+            else:
+                print("[Workflow] No se detectaron dependencias que requieran cambios en cascada")
+            
+            # Usar el análisis base para compatibilidad
+            result = cascade_result.get("base_analysis", {})
+        else:
+            # Análisis simple (un solo archivo)
+            result = self.code.analyze_modification_request(
+                filename=state["target_file"],
+                code_content=state["file_content"],
+                user_request=state["user_prompt"],
+                image_analysis=state.get("vision_analysis")
+            )
 
         state["code_analysis"] = result
         state["web_search_results"] = web_search_results
@@ -329,6 +360,7 @@ class AgentWorkflow:
         """Ejecuta el agente editor (generación de código)."""
         target_file = state.get("target_file")
         file_content = state.get("file_content")
+        cascade_analysis = state.get("cascade_analysis")
         
         print(f"[Workflow] Editor input - target_file: {target_file}")
         print(f"[Workflow] Editor input - file_content length: {len(file_content) if file_content else 0}")
@@ -338,7 +370,52 @@ class AgentWorkflow:
             print(f"[Workflow] Editor: error - falta archivo o contenido")
             return state
 
-        print("[Workflow] Ejecutando agente editor...")
+        # Verificar si hay cambios en cascada requeridos
+        if cascade_analysis and cascade_analysis.get("cascade_required"):
+            print("[Workflow] Ejecutando editor en modo multi-archivo (cascada)...")
+            
+            # Preparar contenido de todos los archivos a modificar
+            all_files = state.get("all_files_content", {})
+            files_to_modify = cascade_analysis.get("all_files_to_modify", [target_file])
+            
+            # Filtrar solo archivos que tenemos contenido
+            files_content = {}
+            for fname in files_to_modify:
+                if fname in all_files:
+                    files_content[fname] = all_files[fname]
+                elif fname == target_file:
+                    files_content[fname] = file_content
+            
+            # Preparar análisis combinado
+            analysis_parts = []
+            if state.get("code_analysis"):
+                analysis_parts.append(state["code_analysis"].get("analysis", ""))
+            if state.get("web_search_results"):
+                analysis_parts.append(state["web_search_results"])
+            code_analysis_combined = "\n\n".join(analysis_parts)
+            
+            # Generar cambios multi-archivo
+            result = self.editor.generate_multi_file_changes(
+                files_content=files_content,
+                user_request=state["user_prompt"],
+                cascade_analysis=cascade_analysis,
+                code_analysis=code_analysis_combined
+            )
+            
+            state["editor_result"] = result
+            
+            if result.get("success"):
+                successful = result.get("successful_files", 0)
+                total = result.get("total_files", 0)
+                print(f"[Workflow] Editor: {successful}/{total} archivos modificados en cascada")
+            else:
+                print(f"[Workflow] Editor: error en cambios en cascada - {result.get('error', 'desconocido')}")
+            
+            state["tokens_used"]["editor"] = len(str(result.get("full_response", "")).split()) // 4
+            return state
+        
+        # Modo simple: un solo archivo
+        print("[Workflow] Ejecutando agente editor (modo simple)...")
 
         # Preparar análisis combinado (código + web search)
         analysis_parts = []
@@ -482,25 +559,42 @@ class AgentWorkflow:
         """Finaliza el workflow y prepara la respuesta."""
         print("[Workflow] Finalizando...")
 
-        # Si hay resultado del editor, usarlo
-        if state.get("editor_result") and state["editor_result"].get("success"):
-            code = state["editor_result"]["code"]
-            mod_id = state["editor_result"].get("modification_id", "")
+        editor_result = state.get("editor_result")
+        
+        # Caso 1: Editor generó código multi-archivo (cascada)
+        if editor_result and editor_result.get("success") and "results" in editor_result:
+            results = editor_result["results"]
+            successful_files = [f for f, r in results.items() if r.get("success")]
+            total_files = len(results)
+            
+            state["final_response"] = f"Cambios generados para {len(successful_files)}/{total_files} archivos"
+            state["success"] = len(successful_files) > 0
+            
+            # Log detallado
+            print(f"[Workflow] Multi-file: {len(successful_files)} archivos exitosos")
+            for fname, result in results.items():
+                status = "✅" if result.get("success") else "❌"
+                print(f"  {status} {fname}: {result.get('error', 'OK')}")
+
+        # Caso 2: Editor generó código simple
+        elif editor_result and editor_result.get("success"):
+            code = editor_result["code"]
+            mod_id = editor_result.get("modification_id", "")
             state["final_response"] = f"Código modificado generado (ID: {mod_id[:8]}...)"
             state["success"] = True
 
-        # Si hay análisis de visión pero no código
-        elif state.get("vision_analysis") and not state.get("editor_result"):
+        # Caso 3: Hay análisis de visión pero no código
+        elif state.get("vision_analysis") and not editor_result:
             state["final_response"] = f"Análisis de imagen:\n{state['vision_analysis'][:500]}..."
             state["success"] = True
 
-        # Si hay análisis de código pero no editor
-        elif state.get("code_analysis") and not state.get("editor_result"):
+        # Caso 4: Hay análisis de código pero no editor
+        elif state.get("code_analysis") and not editor_result:
             analysis = state["code_analysis"].get("analysis", "")
             state["final_response"] = f"Análisis:\n{analysis[:500]}..."
             state["success"] = True
 
-        # Si hay error
+        # Caso 5: Hay error
         elif state.get("error"):
             state["success"] = False
 
@@ -518,7 +612,9 @@ class AgentWorkflow:
         image_path: Optional[str] = None,
         image_paths: Optional[list] = None,
         target_file: Optional[str] = None,
-        file_content: Optional[str] = None
+        file_content: Optional[str] = None,
+        all_files_content: Optional[Dict[str, str]] = None,
+        project_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Ejecuta el workflow completo.
@@ -530,6 +626,8 @@ class AgentWorkflow:
             image_paths: Lista de rutas a imágenes (opcional)
             target_file: Archivo objetivo para modificaciones (opcional)
             file_content: Contenido del archivo objetivo (opcional)
+            all_files_content: Dict de todos los archivos del proyecto para análisis de cascada (opcional)
+            project_path: Ruta del proyecto (opcional)
 
         Returns:
             Dict con el resultado final
@@ -541,7 +639,9 @@ class AgentWorkflow:
             (image_paths is not None and len(image_paths) > 0)
         )
         
-        print(f"[Workflow] run() called with target_file={target_file}, file_content_length={len(file_content) if file_content else 0}, has_image={has_image}")
+        has_multi_file = all_files_content is not None and len(all_files_content) > 1
+        
+        print(f"[Workflow] run() called with target_file={target_file}, file_content_length={len(file_content) if file_content else 0}, has_image={has_image}, multi_file={has_multi_file}")
         
         initial_state: AgentState = {
             "user_prompt": prompt,
@@ -560,6 +660,9 @@ class AgentWorkflow:
             "review_result": None,
             "review_iterations": 0,
             "web_search_results": None,
+            "cascade_analysis": None,
+            "all_files_content": all_files_content,
+            "project_path": project_path,
             "target_file": target_file,
             "file_content": file_content,
             "final_response": "",

@@ -56,6 +56,9 @@ VISION_CAPTURE_DURATION = 20  # segundos
 # Frames por segundo a capturar (cantidad de screenshots = DURATION × FPS)
 VISION_CAPTURE_FPS = 1  # 1 fps = 20 screenshots en 20 segundos
 
+# Auto-recortar regiones de video para reducir tokens
+AUTO_CROP_VIDEO = True
+
 # -------------------------------------------------------------------
 # Configuración de voz
 # -------------------------------------------------------------------
