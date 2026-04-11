@@ -72,11 +72,13 @@ Generate the complete modified file NOW. NO PREAMBLE."""
 
 YOUR ONLY PURPOSE: Output code changes as SEARCH/REPLACE blocks.
 
-CRITICAL RULE - READ CAREFULLY:
-- The CODE IN SEARCH BLOCKS MUST EXIST VERBATIM IN THE ORIGINAL FILE
-- DO NOT invent method names, variable names, or code that doesn't exist
-- COPY the exact lines from the original code provided in the context
-- If you cannot find the exact code to modify, output NOTHING
+ABSOLUTE CRITICAL RULES - READ CAREFULLY OR FAIL:
+1. You are provided with COMPLETE ORIGINAL CODE in the context
+2. The CODE IN SEARCH BLOCKS MUST EXIST VERBATIM IN THAT ORIGINAL CODE
+3. COPY-PASTE the exact lines from the original code - DO NOT type from memory
+4. DO NOT invent methods, functions, or variables that don't exist in the provided code
+5. If the code you want to modify is NOT in the original file, output NOTHING
+6. Before generating each SEARCH block, VERIFY the exact text exists in the original code
 
 STRICT RULES - VIOLATING ANY RULE WILL BREAK THE SYSTEM:
 1. Use EXACTLY this format for each change:
@@ -93,6 +95,12 @@ STRICT RULES - VIOLATING ANY RULE WILL BREAK THE SYSTEM:
 6. Output ONLY the SEARCH/REPLACE blocks, nothing else
 7. SEARCH must contain REAL code from the file, not invented examples
 8. Make ALL requested changes in one response
+9. If unsure about the exact code, output NOTHING rather than guessing
+
+CHECKLIST BEFORE EACH SEARCH BLOCK:
+- [ ] I have the original code in front of me
+- [ ] The search text matches EXACTLY (including spaces, indentation, quotes)
+- [ ] This code actually exists in the file provided
 
 EXAMPLE OF CORRECT OUTPUT:
 <<<<<<< SEARCH
@@ -113,7 +121,7 @@ def hello():
     return 0
 >>>>>>> REPLACE
 
-VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks causes SYSTEM FAILURE. You are a TOOL. Generate patches NOW."""
+VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks or invented code causes SYSTEM FAILURE. You are a TOOL. Generate patches NOW."""
 
     def generate_modified_code(
         self,
@@ -198,9 +206,15 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks causes SYSTEM FAIL
                 "    return True",
                 ">>>>>>> REPLACE",
                 "",
+                "=== REGLA CRÍTICA - LEE ATENTAMENTE ===",
+                "El texto dentro de cada bloque SEARCH debe ser COPIADO EXACTAMENTE del código original proporcionado arriba.",
+                "NO inventes funciones, métodos o variables que no existan en el código original.",
+                "Si necesitas modificar algo que no encuentras en el código original, NO generes un parche para ello.",
+                "Es mejor generar 1 parche correcto que 10 parches inventados.",
+                "",
                 "=== INSTRUCCIÓN FINAL ===",
                 f"El archivo tiene {original_lines} líneas. Genera SOLO los cambios necesarios.",
-                "Usa bloques SEARCH/REPLACE. Cada SEARCH debe coincidir EXACTAMENTE con el código original.",
+                "Usa bloques SEARCH/REPLACE. Cada SEARCH debe ser un COPY-PASTE exacto del código original.",
                 "NO escribas explicaciones. Solo bloques SEARCH/REPLACE."
             ])
             system_prompt = self.system_prompt_patch
