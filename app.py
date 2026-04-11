@@ -227,7 +227,9 @@ async def on_use_existing_images(action):
         return
 
     # Guardar en sesión
+    # Las imágenes de captures/ ya deberían estar recortadas (se recortan al capturar)
     cl.user_session.set("captures", existing_images)
+    cl.user_session.set("images_already_cropped", True)
 
     # Mostrar imágenes cargadas
     await cl.Message(content=f"✅ **{len(existing_images)} imágenes cargadas desde captures/**").send()
@@ -252,8 +254,21 @@ async def on_use_existing_images(action):
 
 @cl.action_callback("capture_screen")
 async def on_capture_screen(action):
-    """Activa captura de pantalla local"""
+    """Activa captura de pantalla local y continúa con análisis"""
     await capture_screens()
+    
+    # Después de capturar, preguntar qué analizar
+    pending_prompt = cl.user_session.get("pending_prompt", "")
+    if pending_prompt:
+        # Si había un prompt pendiente, procesarlo automáticamente
+        await cl.Message(content=f"🔍 **Analizando:** {pending_prompt}").send()
+        await process_prompt(pending_prompt)
+        cl.user_session.set("pending_prompt", "")
+    else:
+        # Si no hay prompt pendiente, pedir uno
+        await cl.Message(
+            content="✅ **Captura completada.**\n\n📝 Escribe qué deseas analizar de las imágenes capturadas:\n\n_Ejemplo: \"analiza las carreras de caballos\" o \"extrae los números de puerta\"_"
+        ).send()
 
 
 async def capture_screens():
@@ -292,21 +307,29 @@ async def capture_screens():
 
         # Capturar frames
         image_paths = []
+        total_token_savings = 0
         for i in range(num_frames):
-            b64, path = screen_stream.capture_and_save_frame()
+            b64, path, metadata = screen_stream.capture_and_save_frame()
             if path:
                 image_paths.append(path)
+                if metadata and metadata.get('cropped'):
+                    total_token_savings += metadata.get('estimated_token_savings', 0)
             if i < num_frames - 1:
                 await asyncio.sleep(delay_between_frames)
+        
+        # Log de ahorro total
+        if total_token_savings > 0:
+            print(f"[Capture] 💰 Ahorro total de tokens por recorte: ~{total_token_savings}")
 
         # Detener stream
         screen_stream.stop()
 
         # Actualizar sesión
         cl.user_session.set("captures", image_paths)
-
-        # Mostrar imágenes capturadas
-        await actions_msg.update(content=f"✅ **{len(image_paths)} imágenes capturadas**")
+        # Las imágenes nuevas ya están recortadas (se recortan durante la captura)
+        cl.user_session.set("images_already_cropped", True)
+        savings_msg = f" (💰 ~{total_token_savings} tokens ahorrados por recorte)" if total_token_savings > 0 else ""
+        await cl.Message(content=f"✅ **{len(image_paths)} imágenes capturadas**{savings_msg}").send()
 
         elements = []
         for path in image_paths[:4]:  # Mostrar máximo 4
@@ -639,12 +662,20 @@ async def process_with_workflow(prompt: str, force_filename: str = None):
             step.output = step_output
 
         # Ejecutar workflow completo
+        # Verificar si las imágenes ya están recortadas (de captures/)
+        images_already_cropped = cl.user_session.get("images_already_cropped", False)
+        
         result = workflow.run(
             prompt=prompt,
             image_paths=captures if captures else None,
+            images_already_cropped=images_already_cropped,
             target_file=filename,
             file_content=content
         )
+        
+        # Resetear flag después de usarlo
+        if images_already_cropped:
+            cl.user_session.set("images_already_cropped", False)
 
         # Mostrar pasos ejecutados basado en el resultado
         execution_path = result.get("execution_path", [])

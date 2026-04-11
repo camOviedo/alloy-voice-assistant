@@ -251,3 +251,149 @@ REGLAS:
             "cached_images": len(cache),
             "memory_file": str(self.memory.memory_file)
         }
+
+    def analyze_images_batch(
+        self, 
+        image_paths: list, 
+        context_prompt: str = None,
+        auto_crop: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Analiza múltiples imágenes en batch.
+        
+        ESTRATEGIA:
+        1. Primero recorta TODAS las imágenes (si auto_crop=True)
+        2. Luego analiza todas las imágenes recortadas
+        
+        Esto es más eficiente que recortar una por una durante el análisis.
+        
+        Args:
+            image_paths: Lista de rutas a imágenes
+            context_prompt: Contexto adicional para el análisis
+            auto_crop: Si True, aplica recorte automático a todas las imágenes primero
+            
+        Returns:
+            Dict con análisis combinado y metadatos de cada imagen
+        """
+        if not image_paths:
+            return {
+                "analysis": "Error: No se proporcionaron imágenes",
+                "success": False,
+                "error": "No images provided"
+            }
+        
+        print(f"[VisionAgent] Procesando batch de {len(image_paths)} imágenes...")
+        
+        # FASE 1: Recortar todas las imágenes primero
+        processed_images = []
+        total_token_savings = 0
+        
+        if auto_crop:
+            print(f"[VisionAgent] Fase 1: Recortando {len(image_paths)} imágenes...")
+            
+        for i, img_path in enumerate(image_paths, 1):
+            if not os.path.exists(img_path):
+                print(f"[VisionAgent] ⚠️ Imagen no encontrada: {img_path}")
+                continue
+            
+            try:
+                # Cargar imagen
+                frame = cv2.imread(img_path)
+                if frame is None:
+                    print(f"[VisionAgent] ⚠️ No se pudo cargar: {img_path}")
+                    continue
+                
+                original_shape = frame.shape
+                crop_metadata = {'cropped': False}
+                
+                # Recortar si está habilitado
+                if auto_crop:
+                    cropped_frame, region, crop_metadata = crop_to_video(frame, padding=10)
+                    if crop_metadata['cropped']:
+                        frame = cropped_frame
+                        total_token_savings += crop_metadata.get('estimated_token_savings', 0)
+                        print(f"[VisionAgent]   [{i}/{len(image_paths)}] ✂️ {os.path.basename(img_path)}: {crop_metadata['reduction_percent']}% reducción")
+                
+                # Codificar a base64
+                _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                image_b64 = base64.b64encode(buffer).decode('utf-8')
+                
+                processed_images.append({
+                    'path': img_path,
+                    'b64': image_b64,
+                    'cropped': crop_metadata.get('cropped', False),
+                    'reduction': crop_metadata.get('reduction_percent', 0),
+                    'original_shape': original_shape,
+                    'final_shape': frame.shape
+                })
+                
+            except Exception as e:
+                print(f"[VisionAgent] ⚠️ Error procesando {img_path}: {e}")
+                continue
+        
+        if not processed_images:
+            return {
+                "analysis": "Error: No se pudieron procesar las imágenes",
+                "success": False,
+                "error": "No images could be processed"
+            }
+        
+        print(f"[VisionAgent] Fase 2: Analizando {len(processed_images)} imágenes recortadas...")
+        print(f"[VisionAgent] 💰 Ahorro total estimado: ~{total_token_savings} tokens")
+        
+        # FASE 2: Analizar todas las imágenes
+        # Construir mensaje con múltiples imágenes
+        user_content = context_prompt if context_prompt else "Analiza estas imágenes de video y extrae toda la información relevante sobre caballos, carreras, números de puerta y posiciones."
+        
+        content_parts = [{"type": "text", "text": user_content}]
+        
+        for img_data in processed_images:
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_data['b64']}"}
+            })
+        
+        messages = [
+            SystemMessage(content=self.system_prompt),
+            HumanMessage(content=content_parts)
+        ]
+        
+        try:
+            print(f"[VisionAgent] Enviando {len(processed_images)} imágenes al modelo...")
+            response = self.llm.invoke(messages)
+            analysis = response.content
+            
+            # Calcular tokens totales
+            total_image_tokens = sum(int(len(img['b64']) * 0.75) for img in processed_images)
+            
+            return {
+                "analysis": analysis,
+                "success": True,
+                "batch_info": {
+                    "total_images": len(image_paths),
+                    "processed_images": len(processed_images),
+                    "cropped_images": sum(1 for img in processed_images if img['cropped']),
+                    "total_token_savings": total_token_savings,
+                    "total_image_tokens": total_image_tokens
+                },
+                "images_metadata": [
+                    {
+                        "path": img['path'],
+                        "cropped": img['cropped'],
+                        "reduction_percent": img['reduction'],
+                        "original_shape": img['original_shape'],
+                        "final_shape": img['final_shape']
+                    }
+                    for img in processed_images
+                ]
+            }
+            
+        except Exception as e:
+            print(f"[VisionAgent] Error en análisis batch: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "analysis": f"Error al analizar imágenes: {e}",
+                "success": False,
+                "error": str(e)
+            }

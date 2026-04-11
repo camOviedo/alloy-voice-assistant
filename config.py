@@ -47,8 +47,10 @@ DEFAULT_VISION_TIMEOUT = 5
 # -------------------------------------------------------------------
 DEFAULT_MONITOR = 1
 DEFAULT_SCALE_DISPLAY = 0.5
-DEFAULT_MAX_WIDTH = 896
-DEFAULT_JPEG_QUALITY = 45
+# Alto max_width y jpeg_quality para mantener buena calidad
+# El ahorro de tokens viene del recorte, no de la compresión
+DEFAULT_MAX_WIDTH = 1920  # Aumentado para mantener calidad
+DEFAULT_JPEG_QUALITY = 85  # Buena calidad JPEG (antes era 45)
 
 # Configuración de captura de video para modo visión
 # Duración total de la captura en segundos
@@ -57,6 +59,7 @@ VISION_CAPTURE_DURATION = 20  # segundos
 VISION_CAPTURE_FPS = 1  # 1 fps = 20 screenshots en 20 segundos
 
 # Auto-recortar regiones de video para reducir tokens
+# Esta es la principal estrategia de ahorro de tokens ahora
 AUTO_CROP_VIDEO = True
 
 # -------------------------------------------------------------------

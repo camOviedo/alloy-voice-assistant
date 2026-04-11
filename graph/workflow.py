@@ -47,6 +47,9 @@ class AgentState(TypedDict):
     cascade_analysis: Optional[Dict[str, Any]]  # Análisis de dependencias
     all_files_content: Optional[Dict[str, str]]  # Todos los archivos a modificar
     project_path: Optional[str]  # Ruta del proyecto
+    
+    # Visión
+    images_already_cropped: bool  # True si las imágenes ya están recortadas (ej: de captures/)
 
     # Output final
     final_response: str
@@ -215,37 +218,36 @@ class AgentWorkflow:
         image_path = state.get("image_path")
         image_paths = state.get("image_paths")
         
-        # Si hay múltiples imágenes, analizar todas
-        if image_paths and len(image_paths) > 0:
-            print(f"[Workflow] Ejecutando agente de visión sobre {len(image_paths)} imágenes...")
+        # Si hay múltiples imágenes, usar análisis en batch (más eficiente)
+        if image_paths and len(image_paths) > 1:
+            print(f"[Workflow] Ejecutando agente de visión en BATCH sobre {len(image_paths)} imágenes...")
+            print(f"[Workflow] Estrategia: recortar todas primero, luego analizar")
             
-            all_analyses = []
-            total_tokens = 0
+            # Usar método batch
+            # Si las imágenes ya están recortadas (de captures/), no recortar de nuevo
+            should_crop = not state.get("images_already_cropped", False)
             
-            for i, path in enumerate(image_paths):
-                print(f"[Workflow] Analizando imagen {i+1}/{len(image_paths)}: {path}")
-                result = self.vision.analyze_image(
-                    image_path=path,
-                    context_prompt=state["user_prompt"]
-                )
-                all_analyses.append(result.get("analysis", ""))
+            result = self.vision.analyze_images_batch(
+                image_paths=image_paths,
+                context_prompt=state["user_prompt"],
+                auto_crop=should_crop  # Solo recortar si son imágenes nuevas
+            )
+            
+            if result.get("success"):
+                batch_info = result.get("batch_info", {})
+                state["vision_analysis"] = result.get("analysis", "")
+                state["tokens_used"]["vision"] = batch_info.get("total_image_tokens", 0)
                 
-                # Acumular tokens
-                tokens = result.get("tokens_used", 0)
-                if isinstance(tokens, dict):
-                    total_tokens += tokens.get("image", 0) + tokens.get("output", 0)
-                elif not result.get("from_cache"):
-                    total_tokens += 1000
-            
-            # Combinar análisis
-            combined_analysis = "\n\n".join([
-                f"**Imagen {i+1}:**\n{analysis}" 
-                for i, analysis in enumerate(all_analyses) if analysis
-            ])
-            
-            state["vision_analysis"] = combined_analysis
-            state["tokens_used"]["vision"] = total_tokens
-            print(f"[Workflow] Visión: análisis de {len(image_paths)} imágenes completado ({total_tokens} tokens)")
+                # Log de estadísticas
+                print(f"[Workflow] Visión: BATCH completado")
+                print(f"  - Imágenes procesadas: {batch_info.get('processed_images', 0)}")
+                print(f"  - Imágenes recortadas: {batch_info.get('cropped_images', 0)}")
+                print(f"  - Ahorro de tokens: ~{batch_info.get('total_token_savings', 0)}")
+                print(f"  - Tokens usados: {batch_info.get('total_image_tokens', 0)}")
+            else:
+                state["vision_analysis"] = f"Error en análisis batch: {result.get('error', 'desconocido')}"
+                state["tokens_used"]["vision"] = 0
+                print(f"[Workflow] Visión: ERROR en batch - {result.get('error')}")
             
         elif image_b64 or image_path:
             # Análisis de imagen única (retrocompatibilidad)
@@ -611,6 +613,7 @@ class AgentWorkflow:
         image_b64: Optional[str] = None,
         image_path: Optional[str] = None,
         image_paths: Optional[list] = None,
+        images_already_cropped: bool = False,
         target_file: Optional[str] = None,
         file_content: Optional[str] = None,
         all_files_content: Optional[Dict[str, str]] = None,
@@ -624,6 +627,7 @@ class AgentWorkflow:
             image_b64: Imagen en base64 (opcional)
             image_path: Ruta a imagen guardada (opcional)
             image_paths: Lista de rutas a imágenes (opcional)
+            images_already_cropped: Si True, las imágenes ya están recortadas (no recortar de nuevo)
             target_file: Archivo objetivo para modificaciones (opcional)
             file_content: Contenido del archivo objetivo (opcional)
             all_files_content: Dict de todos los archivos del proyecto para análisis de cascada (opcional)
@@ -663,6 +667,7 @@ class AgentWorkflow:
             "cascade_analysis": None,
             "all_files_content": all_files_content,
             "project_path": project_path,
+            "images_already_cropped": images_already_cropped,
             "target_file": target_file,
             "file_content": file_content,
             "final_response": "",
