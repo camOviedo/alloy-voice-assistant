@@ -247,10 +247,33 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks or invented code c
 
             if use_patch:
                 # Extraer y aplicar parches
-                patches = self._extract_patches(full_response)
+                patch_result = self._extract_patches(full_response)
+                patches = patch_result['valid']
+                invalid_patches = patch_result['invalid_count']
+                total_patches = patch_result['total_found']
+
                 if patches:
                     proposed_code = self._apply_patches(original_code, patches)
-                    print(f"[EditorAgent] Aplicados {len(patches)} parches")
+                    print(f"[EditorAgent] Aplicados {len(patches)} parches válidos")
+                elif total_patches > 0 and invalid_patches == total_patches:
+                    # Todos los parches eran idénticos - LLM no hizo cambios reales
+                    print(f"[EditorAgent] ⚠️ ERROR CRÍTICO: Todos los {total_patches} parches generados son idénticos (SEARCH == REPLACE)")
+                    print(f"[EditorAgent]    El LLM no realizó ninguna modificación al código")
+                    return {
+                        "filename": filename,
+                        "code": None,
+                        "full_response": full_response,
+                        "success": False,
+                        "error": f"El LLM generó {total_patches} parches pero todos son idénticos (sin cambios reales). El modelo no siguió las instrucciones para modificar el código.",
+                        "validation": {
+                            "original_lines": original_lines,
+                            "new_lines": 0,
+                            "ratio": 0,
+                            "mode": "patch",
+                            "total_patches_found": total_patches,
+                            "invalid_patches": invalid_patches
+                        }
+                    }
                 else:
                     # Fallback: intentar extraer código completo
                     proposed_code = self._extract_code(full_response)
@@ -565,12 +588,19 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks or invented code c
             
             # Extraer parches por archivo
             file_changes = self._extract_patches_by_file(full_response, list(files_content.keys()))
-            
+
+            # Verificar si todos los parches son idénticos
+            total_patches_all = 0
+            valid_patches_all = 0
+            for filename, patches in file_changes.items():
+                total_patches_all += len(patches)
+                valid_patches_all += len([p for p in patches if p])  # patches ya filtrados
+
             # Aplicar parches a cada archivo
             results = {}
             for filename, original_code in files_content.items():
                 patches = file_changes.get(filename, [])
-                
+
                 if patches:
                     proposed_code = self._apply_patches(original_code, patches)
                     
@@ -676,10 +706,11 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks or invented code c
         # Si no encontramos formato estructurado, intentar extraer todo
         if not any(patches_by_file.values()):
             # Extraer todos los parches y asignar al primer archivo (fallback)
-            all_patches = self._extract_patches(text)
+            patch_result = self._extract_patches(text)
+            all_patches = patch_result['valid']
             if all_patches and expected_files:
                 patches_by_file[expected_files[0]] = all_patches
-        
+
         return patches_by_file
 
     def _extract_code(self, text: str) -> Optional[str]:
@@ -690,8 +721,12 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks or invented code c
             return match.group(1).strip()
         return None
 
-    def _extract_patches(self, text: str) -> list:
-        """Extrae bloques SEARCH/REPLACE del texto, incluso dentro de bloques markdown."""
+    def _extract_patches(self, text: str) -> dict:
+        """Extrae bloques SEARCH/REPLACE del texto, incluso dentro de bloques markdown.
+        
+        Returns:
+            Dict con 'valid' (lista de parches válidos) y 'invalid_count' (parches idénticos descartados)
+        """
         # Primero intentar extraer de bloques markdown si existen
         code_pattern = r'```(?:python)?\n(.*?)```'
         code_match = re.search(code_pattern, text, re.DOTALL)
@@ -704,13 +739,20 @@ VIOLATION CONSEQUENCE: Any text outside SEARCH/REPLACE blocks or invented code c
 
         # Filtrar parches donde SEARCH == REPLACE (sin cambios reales)
         valid_patches = []
+        invalid_count = 0
         for search, replace in matches:
             search_clean = search.rstrip('\n')
             replace_clean = replace.rstrip('\n')
             if search_clean != replace_clean:
                 valid_patches.append((search_clean, replace_clean))
+            else:
+                invalid_count += 1
 
-        return valid_patches
+        return {
+            'valid': valid_patches,
+            'invalid_count': invalid_count,
+            'total_found': len(matches)
+        }
 
     def _apply_patches(self, original_code: str, patches: list) -> str:
         """Aplica parches al código original, reportando cuáles fallaron."""
