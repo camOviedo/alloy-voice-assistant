@@ -345,6 +345,160 @@ class AgentWorkflow:
             return "editor"
         return "finalize"
 
+    def _generate_search_query(
+        self,
+        user_prompt: str,
+        code_analysis: Optional[Dict],
+        target_file: str
+    ) -> str:
+        """
+        Genera una query de búsqueda inteligente extrayendo keywords técnicas.
+        
+        En lugar de buscar el prompt literal, extrae:
+        - Librerías/frameworks mencionados (opencv, yolo, tensorflow, etc.)
+        - Conceptos técnicos relevantes
+        - Contexto del archivo objetivo
+        """
+        import re
+        
+        prompt_lower = user_prompt.lower()
+        
+        # Diccionario de librerías/frameworks populares en Python
+        tech_keywords = {
+            # Computer Vision
+            'opencv': ['opencv', 'cv2', 'computer vision', 'image processing', 'detection'],
+            'yolo': ['yolo', 'object detection', 'real-time detection'],
+            'pillow': ['pillow', 'pil', 'image', 'image manipulation'],
+            'mediapipe': ['mediapipe', 'pose detection', 'hand tracking'],
+            
+            # ML/AI
+            'tensorflow': ['tensorflow', 'tf', 'keras', 'neural network', 'deep learning'],
+            'pytorch': ['pytorch', 'torch', 'nn.Module', 'autograd'],
+            'sklearn': ['sklearn', 'scikit-learn', 'machine learning', 'classification', 'regression'],
+            'numpy': ['numpy', 'np', 'array', 'matrix operations'],
+            'pandas': ['pandas', 'pd', 'dataframe', 'data analysis'],
+            
+            # Web
+            'django': ['django', 'web framework', 'orm'],
+            'flask': ['flask', 'micro framework', 'rest api'],
+            'fastapi': ['fastapi', 'async api', 'pydantic'],
+            'requests': ['requests', 'http', 'api call'],
+            
+            # UI
+            'tkinter': ['tkinter', 'gui', 'desktop app'],
+            'streamlit': ['streamlit', 'web app', 'dashboard'],
+            'chainlit': ['chainlit', 'chat ui', 'conversational interface'],
+            
+            # Database
+            'sqlalchemy': ['sqlalchemy', 'orm', 'database'],
+            'sqlite': ['sqlite', 'embedded database'],
+            'postgresql': ['postgresql', 'postgres', 'psycopg2'],
+            
+            # Async/Concurrent
+            'asyncio': ['asyncio', 'async', 'await', 'coroutine'],
+            'threading': ['threading', 'thread', 'concurrent'],
+            'multiprocessing': ['multiprocessing', 'process', 'parallel'],
+            
+            # Data formats
+            'json': ['json', 'serialization'],
+            'xml': ['xml', 'etree', 'ElementTree'],
+            'yaml': ['yaml', 'config file'],
+            
+            # Testing
+            'pytest': ['pytest', 'unit test', 'testing'],
+            'unittest': ['unittest', 'test case'],
+            
+            # Utils
+            'logging': ['logging', 'logger', 'log handler'],
+            'argparse': ['argparse', 'cli', 'command line'],
+            'subprocess': ['subprocess', 'shell command', 'external process'],
+        }
+        
+        # Detectar tecnologías mencionadas
+        detected_techs = []
+        for tech, keywords in tech_keywords.items():
+            if any(kw in prompt_lower for kw in keywords):
+                detected_techs.append(tech)
+        
+        # Extraer conceptos técnicos del análisis de código si está disponible
+        analysis_keywords = []
+        if code_analysis and isinstance(code_analysis, dict):
+            analysis_text = code_analysis.get("analysis", "")
+            if analysis_text:
+                # Buscar menciones de librerías en el análisis
+                for tech, keywords in tech_keywords.items():
+                    if any(kw in analysis_text.lower() for kw in keywords):
+                        if tech not in detected_techs:
+                            detected_techs.append(tech)
+        
+        # Detectar tarea/programa a realizar (verbos + sustantivos)
+        task_patterns = [
+            r'(track|tracking|seguimiento|seguir)',
+            r'(detect|detection|detección|detectar)',
+            r'(recognize|recognition|reconocimiento|reconocer)',
+            r'(classify|classification|clasificar|clasificación)',
+            r'(predict|prediction|predicción|predecir)',
+            r'(analyze|analysis|análisis|analizar)',
+            r'(process|processing|procesamiento|procesar)',
+            r'(extract|extraction|extracción|extraer)',
+            r'(train|training|entrenamiento|entrenar)',
+            r'(optimize|optimization|optimización|optimizar)',
+            r'(convert|conversion|conversión|convertir)',
+            r'(parse|parsing|parser|parsear)',
+            r'(serialize|serialization|serialización)',
+            r'(visualize|visualization|visualización)',
+            r'(monitor|monitoring|monitoreo)',
+            r'(scrape|scraping|web scraping)',
+            r'(automate|automation|automatización)',
+        ]
+        
+        detected_tasks = []
+        for pattern in task_patterns:
+            if re.search(pattern, prompt_lower):
+                # Extraer la palabra base de la tarea
+                task_word = pattern.split('|')[0].replace('\\', '').strip('()')
+                detected_tasks.append(task_word)
+        
+        # Construir query
+        query_parts = ["python"]  # Siempre empezar con python
+        
+        # Agregar tecnologías detectadas (máximo 3 para no saturar)
+        for tech in detected_techs[:3]:
+            query_parts.append(tech)
+        
+        # Agregar tareas detectadas (máximo 2)
+        for task in detected_tasks[:2]:
+            query_parts.append(task)
+        
+        # Si no se detectó nada específico, usar palabras clave del prompt
+        if len(query_parts) == 1:
+            # Extraer sustantivos técnicos del prompt (palabras de 4+ caracteres)
+            words = re.findall(r'\b[a-z]{4,}\b', prompt_lower)
+            # Filtrar palabras comunes no técnicas
+            common_words = {'como', 'para', 'este', 'esta', 'del', 'los', 'las', 'con', 
+                          'que', 'una', 'uno', 'mas', 'pero', 'por', 'son', 'hay',
+                          'ahora', 'entonces', 'cuando', 'donde', 'bien', 'cada',
+                          'debe', 'hacer', 'favor', 'hace', 'solo', 'todos', 'todas',
+                          'cambio', 'cambios', 'archivo', 'archivos', 'codigo', 'file',
+                          'code', 'change', 'modify', 'update', 'need', 'make', 'add',
+                          'fix', 'correct', 'implement', 'create', 'generate'}
+            technical_words = [w for w in words if w not in common_words]
+            # Agregar hasta 3 palabras técnicas
+            query_parts.extend(technical_words[:3])
+        
+        # Agregar contexto del archivo si es relevante
+        file_ext = target_file.split('.')[-1].lower() if '.' in target_file else ''
+        if file_ext == 'py':
+            query_parts.append("code example")
+        
+        query = " ".join(query_parts)
+        
+        print(f"[Workflow] Query generada: {query}")
+        print(f"[Workflow] Tecnologías detectadas: {detected_techs[:3]}")
+        print(f"[Workflow] Tareas detectadas: {detected_tasks[:2]}")
+        
+        return query
+
     def _run_editor(self, state: AgentState) -> AgentState:
         """Ejecuta el agente editor (generación de código)."""
         target_file = state.get("target_file")
@@ -363,8 +517,13 @@ class AgentWorkflow:
         web_search_results = None
         if web_search.should_search(state["user_prompt"]):
             print("[Workflow] Editor: detectada posible necesidad de búsqueda web...")
-            # Buscar información sobre el error/tema
-            search_query = f"python {state['user_prompt'][:100]}"
+            # Generar query inteligente basada en análisis técnico
+            search_query = self._generate_search_query(
+                state["user_prompt"],
+                state.get("code_analysis"),
+                target_file
+            )
+            print(f"[Workflow] Editor: query de búsqueda generada: {search_query[:80]}...")
             results = web_search.search(search_query, domain='stackoverflow', max_results=3)
             if results:
                 web_search_results = web_search.format_for_prompt(results)
