@@ -24,6 +24,9 @@ class WebSearchTool:
     Busca información técnica para ayudar en la generación de código.
     """
 
+    # Callback para notificar visualización externa (ej: chainlit)
+    _status_callback = None
+
     # Keywords que activan búsqueda automática
     ERROR_KEYWORDS = [
         'error', 'exception', 'traceback', 'no funciona', 'falla',
@@ -63,6 +66,24 @@ class WebSearchTool:
         except Exception:
             self._search_available = False
 
+    @classmethod
+    def set_status_callback(cls, callback):
+        """Establece callback para notificar estado de búsqueda."""
+        cls._status_callback = callback
+
+    def _notify_status(self, stage: str, message: str, data: Dict = None):
+        """Notifica estado de búsqueda para visualización."""
+        # Terminal
+        prefix = "🔍" if stage == "start" else "✅" if stage == "success" else "❌" if stage == "error" else "📊"
+        print(f"[WebSearch] {prefix} {message}")
+
+        # Chainlit (via callback)
+        if self._status_callback:
+            try:
+                self._status_callback(stage, message, data or {})
+            except Exception as e:
+                print(f"[WebSearch] Error en callback: {e}")
+
     def should_search(self, prompt: str, code_analysis: str = None) -> bool:
         """
         Determina si se debe activar la búsqueda web.
@@ -74,8 +95,20 @@ class WebSearchTool:
         Returns:
             True si se debe buscar, False en caso contrario
         """
-        # Por ahora desactivado hasta que se implemente búsqueda real
-        return False
+        prompt_lower = prompt.lower()
+
+        # Detectar keywords de error
+        has_error_keywords = any(kw in prompt_lower for kw in self.ERROR_KEYWORDS)
+
+        # Detectar librerías populares
+        has_library = any(lib in prompt_lower for lib in self.POPULAR_LIBS)
+
+        should = has_error_keywords or has_library
+
+        if should:
+            self._notify_status("detected", f"Búsqueda web activada para: {prompt[:50]}...")
+
+        return should
 
     def search(
         self,
@@ -95,9 +128,30 @@ class WebSearchTool:
         Returns:
             Lista de SearchResult (vacía por ahora - placeholder)
         """
+        domain_str = f" [{domain}]" if domain else ""
+        self._notify_status("start", f"Iniciando búsqueda{domain_str}: {query[:60]}...")
+
+        # Verificar cache
+        cache_key = f"{query}:{domain}:{max_results}"
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            self._notify_status("cache", f"Usando cache ({len(cached)} resultados)", {"count": len(cached)})
+            return cached
+
         # Placeholder - la búsqueda real requiere integración con herramienta externa
-        print(f"[WebSearch] Búsqueda solicitada: {query[:60]}... (funcionalidad placeholder)")
-        return []
+        self._notify_status("searching", f"Buscando... (placeholder - implementación pendiente)")
+
+        # Simular resultados de ejemplo para demostración
+        # En implementación real, aquí se haría la búsqueda
+        results = []
+
+        self._notify_status("success", f"Búsqueda completada: {len(results)} resultados", {"count": len(results)})
+
+        # Guardar en cache
+        if results:
+            self._save_to_cache(cache_key, results)
+
+        return results
 
     def search_for_error(
         self,
@@ -116,6 +170,8 @@ class WebSearchTool:
         Returns:
             Lista de SearchResult
         """
+        self._notify_status("start", f"Buscando solución para error: {error_message[:50]}...")
+
         query_parts = [error_message]
         if context:
             query_parts.append(context)
@@ -141,6 +197,8 @@ class WebSearchTool:
         Returns:
             Lista de SearchResult
         """
+        self._notify_status("start", f"Buscando ejemplos de {library} para: {task[:40]}...")
+
         query = f"{library} {task} python example"
         return self.search(query, max_results=max_results)
 

@@ -30,6 +30,7 @@ from assistant_core import Assistant
 from file_manager import ProjectFileManager
 from screen_capture import ScreenStream
 from graph.workflow import AgentWorkflow
+from tools.web_search import web_search
 
 
 # Variables globales para la sesión
@@ -542,6 +543,19 @@ async def process_with_workflow(prompt: str, force_filename: str = None):
     captures = cl.user_session.get("captures", [])
     fm = cl.user_session.get("file_manager")
 
+    # Variables para capturar estado de búsqueda web
+    web_search_logs = []
+
+    def web_search_callback(stage: str, message: str, data: Dict):
+        """Callback para capturar mensajes de búsqueda web"""
+        web_search_logs.append({"stage": stage, "message": message, "data": data})
+        # También loguear en terminal
+        prefix = "🔍" if stage == "start" else "✅" if stage == "success" else "❌" if stage == "error" else "📊"
+        print(f"[Chainlit WebSearch] {prefix} {message}")
+
+    # Registrar callback para búsquedas web
+    web_search.set_status_callback(web_search_callback)
+
     # Extraer archivo si se menciona
     filename = force_filename or extract_filename(prompt)
     content = None
@@ -697,6 +711,27 @@ async def process_with_workflow(prompt: str, force_filename: str = None):
                 summary = code_analysis.get("summary", "")
 
                 step_output = f"**Resumen:** {summary}\n\n**Análisis:**\n{analysis_text[:600]}..."
+                step.output = step_output
+
+        # Step 3.5: Web Search (si se ejecutó búsqueda)
+        if web_search_logs:
+            async with cl.Step(name="🌐 Web Search", type="tool") as step:
+                log_lines = []
+                for log in web_search_logs:
+                    stage = log["stage"]
+                    message = log["message"]
+                    emoji = "🔍" if stage == "start" else "✅" if stage == "success" else "❌" if stage == "error" else "📊" if stage == "detected" else "💾"
+                    log_lines.append(f"{emoji} {message}")
+
+                web_search_content = "\n".join(log_lines)
+                results_count = result.get("web_search_results", "")
+                has_results = bool(results_count and len(results_count) > 50)
+
+                step_output = f"**Actividad de búsqueda:**\n```\n{web_search_content}\n```"
+                if has_results:
+                    step_output += "\n\n✅ Información de búsqueda incorporada al análisis"
+                else:
+                    step_output += "\n\n⚠️ Búsqueda realizada pero sin resultados (placeholder)"
                 step.output = step_output
 
         # Step 4: Editor (si se ejecutó)
