@@ -546,8 +546,18 @@ async def process_with_workflow(prompt: str, force_filename: str = None):
     # Variables para capturar estado de búsqueda web
     web_search_logs = []
 
-    def web_search_callback(stage: str, message: str, data: Dict):
+    def web_search_callback(*args):
         """Callback para capturar mensajes de búsqueda web"""
+        # Manejar tanto (stage, message, data) como (self, stage, message, data)
+        if len(args) == 3:
+            stage, message, data = args
+        elif len(args) == 4:
+            # Ignorar primer argumento (self pasado explícitamente)
+            _, stage, message, data = args
+        else:
+            # Fallback: tomar los últimos 3 argumentos
+            stage, message, data = args[-3], args[-2], args[-1]
+        
         web_search_logs.append({"stage": stage, "message": message, "data": data})
         # También loguear en terminal
         prefix = "🔍" if stage == "start" else "✅" if stage == "success" else "❌" if stage == "error" else "📊"

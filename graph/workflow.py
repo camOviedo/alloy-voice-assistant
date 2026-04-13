@@ -293,18 +293,6 @@ class AgentWorkflow:
 
         print("[Workflow] Ejecutando agente de código...")
 
-        # Verificar si necesita búsqueda web
-        web_search_results = None
-        if web_search.should_search(state["user_prompt"]):
-            print("[Workflow] Detectada posible necesidad de búsqueda web...")
-            # Buscar información sobre el error/tema
-            search_query = f"python {state['user_prompt'][:100]}"
-            results = web_search.search(search_query, domain='stackoverflow', max_results=3)
-            if results:
-                web_search_results = web_search.format_for_prompt(results)
-                print(f"[Workflow] Web search: {len(results)} resultados encontrados")
-                state["tokens_used"]["web_search"] = len(web_search_results) // 4
-
         # Análisis con detección de cascada si hay múltiples archivos disponibles
         all_files = state.get("all_files_content")
         project_path = state.get("project_path")
@@ -341,7 +329,6 @@ class AgentWorkflow:
             )
 
         state["code_analysis"] = result
-        state["web_search_results"] = web_search_results
         state["tokens_used"]["code"] = len(str(result).split()) // 4 if not result.get("from_cache") else 0
 
         if result.get("from_cache"):
@@ -363,14 +350,33 @@ class AgentWorkflow:
         target_file = state.get("target_file")
         file_content = state.get("file_content")
         cascade_analysis = state.get("cascade_analysis")
-        
+
         print(f"[Workflow] Editor input - target_file: {target_file}")
         print(f"[Workflow] Editor input - file_content length: {len(file_content) if file_content else 0}")
-        
+
         if not target_file or not file_content:
             state["editor_result"] = {"error": "No hay archivo para editar", "success": False}
             print(f"[Workflow] Editor: error - falta archivo o contenido")
             return state
+
+        # Búsqueda web exclusiva del EditorAgent (solo cuando se generará código)
+        web_search_results = None
+        if web_search.should_search(state["user_prompt"]):
+            print("[Workflow] Editor: detectada posible necesidad de búsqueda web...")
+            # Buscar información sobre el error/tema
+            search_query = f"python {state['user_prompt'][:100]}"
+            results = web_search.search(search_query, domain='stackoverflow', max_results=3)
+            if results:
+                web_search_results = web_search.format_for_prompt(results)
+                print(f"[Workflow] Editor: {len(results)} resultados de búsqueda encontrados")
+                state["tokens_used"]["web_search"] = len(web_search_results) // 4
+            else:
+                print("[Workflow] Editor: búsqueda sin resultados")
+        else:
+            print("[Workflow] Editor: búsqueda web no requerida para este prompt")
+
+        # Guardar resultados en state para que el callback de chainlit los capture
+        state["web_search_results"] = web_search_results
 
         # Verificar si hay cambios en cascada requeridos
         if cascade_analysis and cascade_analysis.get("cascade_required"):
