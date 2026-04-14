@@ -370,6 +370,7 @@ class AgentWorkflow:
             'yolo': ['yolo', 'object detection', 'real-time detection'],
             'pillow': ['pillow', 'pil', 'image', 'image manipulation'],
             'mediapipe': ['mediapipe', 'pose detection', 'hand tracking'],
+            'pytesseract': ['pytesseract', 'tesseract', 'ocr', 'text recognition', 'image to text'],
             
             # ML/AI
             'tensorflow': ['tensorflow', 'tf', 'keras', 'neural network', 'deep learning'],
