@@ -64,21 +64,43 @@ Salida: {"vision": true, "code_analysis": false, "code_generation": false, "dire
 
 Ejemplo 2 - Visión + modificación de código (CASO CRÍTICO):
 Usuario: "En la captura se ven los competidores. Necesito que muestre desde qué puerta salieron - haz los cambios necesarios."
-Salida: {"vision": true, "code_analysis": true, "code_generation": true, "direct_response": false, "reasoning": "Usuario muestra imagen Y pide modificar código para mostrar nueva información. Requiere visión + análisis + generación de código"}
+Salida: {"vision": true, "code_analysis": true, "code_generation": true, "direct_response": false, "reasoning": "Usuario muestra imagen con competidores y pide modificar código para mostrar desde qué puerta salió cada competidor. Se ve la puerta en la imagen. Requiere visión + análisis + generación de código para añadir funcionalidad de tracking de puertas"}
 
 Ejemplo 3 - Solicitud de corrección sin imagen:
 Usuario: "hay un error en tracker.py, corrige las importaciones"
-Salida: {"vision": false, "code_analysis": true, "code_generation": true, "direct_response": false, "reasoning": "El usuario reporta un error y pide corrección, requiere análisis y generación de código modificado"}
+Salida: {"vision": false, "code_analysis": true, "code_generation": true, "direct_response": false, "reasoning": "Usuario reporta error de importaciones en tracker.py y solicita corrección. Requiere análisis del archivo para identificar importaciones incorrectas/faltantes y generación de código corregido"}
 
 Ejemplo 4 - Solo análisis (NO generar código):
 Usuario: "explica qué hace este archivo"
 Salida: {"vision": false, "code_analysis": true, "code_generation": false, "direct_response": false, "reasoning": "El usuario solo pide explicación, no modificación"}
 
+Ejemplo 5 - Error específico con traceback (IMPORTANTE - preservar detalles):
+Usuario: "Error in tracker.update: 'EfficientHorseTracker' object has no attribute 'detect_lane_numbers'. Traceback: File tracker.py line 195, self.detect_lane_numbers(frame). AttributeError: 'EfficientHorseTracker' object has no attribute 'detect_lane_numbers'. Corrigelo."
+Salida: {"vision": false, "code_analysis": true, "code_generation": true, "direct_response": false, "reasoning": "Usuario reporta AttributeError específico: 'EfficientHorseTracker' object has no attribute 'detect_lane_numbers' en tracker.py línea 195. El error ocurre al llamar self.detect_lane_numbers(frame) dentro del método update. Indica importaciones incorrectas o método faltante. Requiere análisis del código y generación de código corregido para añadir/implementar detect_lane_numbers"}
+
+Ejemplo 6 - Datos específicos de detección (IMPORTANTE - preservar números):
+Usuario: "Al correr el programa la detección de puertas muestra: {1: 36, 4: 32, 3: 28, 2: 39, 0: 35, 5: 38, 7: 40, 6: 27, 8: 29, 9: 41}. Pero en las imágenes se ven puertas 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16. Modificar detect_initial_gates en app.py."
+Salida: {"vision": true, "code_analysis": true, "code_generation": true, "direct_response": false, "reasoning": "Usuario reporta discrepancia en detección de puertas: sistema detecta puertas 0-9 con valores {1:36,4:32,3:28,2:39,0:35,5:38,7:40,6:27,8:29,9:41} pero en imágenes hay puertas 1-16. Necesita mejorar función detect_initial_gates en app.py con pytesseract. Requiere visión + análisis + generación de código"}
+
+REGLA CRÍTICA #3 - PRESERVAR DETALLES ESPECÍFICOS EN REASONING:
+El campo "reasoning" DEBE incluir los detalles específicos del prompt del usuario:
+- Si hay errores: incluye el mensaje de error específico y línea afectada
+- Si hay números/datos: inclúyelos exactos (ej: "puertas 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16")
+- Si menciona funciones/archivos específicos: nómbralos explícitamente
+- NO generes reasoning genérico como "El usuario reporta un error" - sé específico
+
+Ejemplo de reasoning CORRECTO (con detalles):
+"Usuario reporta error AttributeError: 'EfficientHorseTracker' object has no attribute 'detect_lane_numbers' en tracker.py línea 195. Se menciona que las importaciones están incorrectas. Requiere análisis del código y generación de código corregido para añadir el método detect_lane_numbers faltante."
+
+Ejemplo de reasoning INCORRECTO (genérico, sin detalles):
+"El usuario ha notificado problemas en tracker.py"
+
 IMPORTANTE:
 - Devuelve SIEMPRE un JSON válido
 - NO agregues texto explicativo fuera del JSON
 - Usa true/false (minúsculas, sin comillas)
-- Cuando el usuario pida CORREGIR/ARREGLAR/MODIFICAR código, code_generation DEBE ser true"""
+- Cuando el usuario pida CORREGIR/ARREGLAR/MODIFICAR código, code_generation DEBE ser true
+- El reasoning DEBE preservar los detalles específicos del prompt original"""
 
     def analyze_request(self, prompt: str, has_image: bool = False) -> Dict[str, Any]:
         """
